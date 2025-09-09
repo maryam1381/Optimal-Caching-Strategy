@@ -1,0 +1,22 @@
+{
+  "M": 100,
+  "W": 200,
+  "gamma_r": 0.8,
+  "a0": 1.0,
+  "b0": 1.0,
+  "A_user": 10.0,
+  "lambda_true": 2.5,
+  "N_pool": 2000,
+  "dataset_size": 1000,
+  "batch_size": 16,
+  "L": 200,
+  "gamma": 0.05,
+  "tau": 0.01,
+  "lr": 0.001,
+  "epochs": 100,
+  "S_cache": 10,
+  "hidden_small": true,
+  "dropout": 0.0,
+  "seed": 42,
+  "save_dir": "experiments/checkpoints/run_default"
+}
