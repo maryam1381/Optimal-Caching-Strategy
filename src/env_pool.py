@@ -267,6 +267,8 @@ def _test_build_env_pool():
         a0_p=a0_p, a0_lambda=a0_l, b0_lambda=b0_l, A_obs=A,
         lambda_true=lambda_true, rng_seed=123, as_torch=False
     )
+    # print("P pool : ",P_pool[:5])
+    # print("Lam pool : ",LAM_pool[:5])
     assert P_pool.shape == (N_pool, M)
     assert LAM_pool.shape == (N_pool,)
     # row-stochastic check
@@ -277,3 +279,4 @@ def _test_build_env_pool():
 
 if __name__ == "__main__":
     _test_build_env_pool()
+

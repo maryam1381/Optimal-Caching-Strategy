@@ -348,9 +348,9 @@ def evaluate_model_simple(model, val_dataset_q, env_pool_list, project_fn, compu
 # -------------------------
 if __name__ == "__main__":
     # Minimal smoke test (toy sizes)
-    from src.model import create_mlp
-    from src.env_pool import build_env_pool
-    from src.losses import project_capped_simplex
+    from model import create_mlp
+    from env_pool import build_env_pool_simulated
+    from losses import project_capped_simplex
     # toy compute_utility: simple dot product (replace with your real utility)
     def toy_utility(p, lam, x):
         # p: (M,), x: (M,)
@@ -360,8 +360,9 @@ if __name__ == "__main__":
     in_extra = 1
     model, optimizer = create_mlp(M=M, in_extra=in_extra, lr=1e-3, weight_decay=1e-4)
     # make toy env_pool
-    env_pool = list(build_env_pool(N_pool=200, M=M, W=100, gamma_r=1.0, a0=1, b0=1, A_user=10, lambda_=2.0))
+    env_pool = list(build_env_pool_simulated(N_pool=200, M=M, W=100, zipf_exponent=1.0, a0_lambda=1, b0_lambda=1, a0_p=10, lambda_true=2.0))
     # toy dataset of q: here we use p concatenated with one lambda measurement (just demo)
+    p , lam = env_pool
     dataset_q = np.vstack([np.concatenate([p, np.array([lam])]) for (p, lam) in env_pool[:100]])
     config = TrainConfig(N_pool=200, L=64, batch_size=8, gamma_tail=0.05, tau=8.0, epochs=2,
                          lr=1e-3, device="cpu", checkpoint_dir="./checkpoints_toy", verbose=True)

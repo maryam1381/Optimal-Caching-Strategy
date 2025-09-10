@@ -298,13 +298,14 @@ def main(config: Dict[str, Any]):
             val_dataset_q=None,
         )
     except TypeError:
+        print(f"[main] error in train loop at the 301.")
         # fallback: try positional or simplified signature
-        try:
-            sig = inspect.signature(train_mod.train_loop)
-            print(f"[main] train.train signature: {sig}. Attempting positional fallback.")
-        except Exception:
-            print(f"[main] error in train loop")
-            pass
+        # try:
+        #     sig = inspect.signature(train_mod.train_loop)
+        #     print(f"[main] train.train signature: {sig}. Attempting positional fallback.")
+        # except Exception:
+        #     print(f"[main] error in train loop")
+        #     pass
         # fallback simple attempt; student should adapt if their train API is custom
         # train_mod.train_loop(model, dataset, pool_args, save_dir, env_pool)
 

@@ -191,7 +191,7 @@ def utility_from_env_samples(
     p_samples: torch.Tensor,
     lam_samples: torch.Tensor,
     x: torch.Tensor,
-    theta: float,
+    theta: float = 0.414,
     lambda_I_factor: float = 1.0,
     P_t: float = 1.0,
     N0: float = 1e-9,
@@ -226,7 +226,7 @@ def utility_from_env_samples(
     else:
         x_vec = x
 
-    L, M = p_samples.shape
+    # L, M = p_samples.shape
     device = p_samples.device
     dtype = p_samples.dtype
 
