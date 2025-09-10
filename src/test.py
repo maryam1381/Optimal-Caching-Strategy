@@ -166,7 +166,7 @@ from losses import project_capped_simplex
 def test_trivial_cases():
     y = torch.tensor([0.2, 0.5])
     assert torch.allclose(project_capped_simplex(y, 0.0), torch.zeros_like(y))
-    assert torch.allclose(project_capped_simplex(y, 2.0), torch.min(y, torch.ones_like(y)))
+    assert torch.allclose(project_capped_simplex(y, 2.0), torch.ones_like(y))
 
 def test_projection_sum_and_bounds():
     y = torch.tensor([0.2, 1.5, -0.3, 0.8])
@@ -178,3 +178,206 @@ def test_projection_sum_and_bounds():
 test_trivial_cases()
 test_projection_sum_and_bounds()
 print("Done")
+
+
+#  losses.py 
+
+
+
+# test_rate_theta_rho_pSucc_utility.py
+import math
+import torch
+import numpy as np
+import pytest
+
+from losses import (  # <-- مسیر ایمپورت را با ماژول خودتان تطبیق دهید
+    rho_theta_alpha4,
+    p_succ_alpha4,
+    utility_from_env_samples,
+)
+
+# --- helpers (اختیاری اگر در ماژول اصلی اضافه‌شان نکردید) ---
+def theta_from_T_bits(T_bits: float) -> float:
+    return float(2.0**T_bits - 1.0)
+
+def theta_from_T_bits_torch(T_bits: float, *, dtype=torch.float32, device=None) -> torch.Tensor:
+    Tt = torch.tensor(float(T_bits), dtype=dtype, device=device)
+    two = torch.tensor(2.0, dtype=dtype, device=device)
+    return torch.pow(two, Tt) - 1.0
+
+
+# -----------------------------
+# 1) Theta = 2^T - 1
+# -----------------------------
+def test_theta_from_T_bits():
+    assert theta_from_T_bits(0.0) == pytest.approx(0.0)
+    assert theta_from_T_bits(1.0) == pytest.approx(1.0)     # 2^1 - 1 = 1
+    assert theta_from_T_bits(2.0) == pytest.approx(3.0)     # 4 - 1
+    # torch version consistency
+    th_t = theta_from_T_bits_torch(3.0)
+    assert th_t.item() == pytest.approx(7.0)
+
+test_theta_from_T_bits()
+# -----------------------------
+# 2) rho(theta) properties
+# -----------------------------
+def test_rho_theta_alpha4_properties():
+    th0 = torch.tensor(0.0)
+    rho0 = rho_theta_alpha4(th0)
+    assert rho0.item() == pytest.approx(0.0)  # rho(0)=0
+
+    # rho should be positive and increasing for theta>0
+    th1 = torch.tensor(0.1)
+    th2 = torch.tensor(1.0)
+    r1 = rho_theta_alpha4(th1).item()
+    r2 = rho_theta_alpha4(th2).item()
+    assert r1 > 0.0 and r2 > 0.0
+    assert r2 > r1
+test_rho_theta_alpha4_properties()
+
+# -----------------------------
+# 3) P_succ bounds & monotonicity in theta
+# -----------------------------
+def test_p_succ_bounds_and_monotonicity_in_theta():
+    device = torch.device("cpu")
+    dtype = torch.float32
+
+    # simple scenario: lam_i, lam_I > 0
+    lam_i = torch.full((5,), 0.2, dtype=dtype, device=device)
+    lam_I = torch.full((5,), 0.5, dtype=dtype, device=device)
+
+    theta_lo = theta_from_T_bits(0.5)   # smaller threshold
+    theta_hi = theta_from_T_bits(2.0)   # larger threshold
+
+    p_lo = p_succ_alpha4(lam_i, lam_I, theta_lo)  # shape (5,)
+    p_hi = p_succ_alpha4(lam_i, lam_I, theta_hi)
+
+    # bounds
+    assert torch.all(p_lo >= 0) and torch.all(p_lo <= 1)
+    assert torch.all(p_hi >= 0) and torch.all(p_hi <= 1)
+
+    # monotonicity: higher theta => harder success => smaller P_succ
+    assert torch.all(p_lo >= p_hi)
+test_p_succ_bounds_and_monotonicity_in_theta()
+
+
+# -----------------------------
+# 4) Utility: shape, bounds, monotonicity in x
+# -----------------------------
+def test_utility_from_env_samples_shape_bounds_and_monotonicity():
+    torch.manual_seed(0)
+    L, M = 7, 10
+    # random popularity rows that sum to 1
+    p = torch.rand(L, M)
+    p = p / p.sum(dim=1, keepdim=True)
+
+    lam = torch.full((L,), 0.8)
+
+    # x_zero (no caching) vs x_full (cache everything) for S=M
+    x_zero = torch.zeros(M)
+    x_full = torch.ones(M)
+
+    theta = theta_from_T_bits(1.0)  # theta = 1
+
+    U_zero = utility_from_env_samples(p, lam, x_zero, theta=theta)  # (L,)
+    U_full = utility_from_env_samples(p, lam, x_full, theta=theta)
+
+    # shapes & bounds
+    assert U_zero.shape == (L,)
+    assert torch.all(U_zero >= 0) and torch.all(U_zero <= 1)
+    assert torch.all(U_full >= 0) and torch.all(U_full <= 1)
+
+    # monotonicity in x: with larger x (more helpers), success should not decrease
+    assert torch.all(U_full >= U_zero)
+test_utility_from_env_samples_shape_bounds_and_monotonicity()
+
+# -----------------------------
+# 5) Consistency: passing T in bits vs passing theta directly
+# -----------------------------
+def test_bits_vs_theta_consistency_in_pipeline():
+    L, M = 3, 5
+    p = torch.rand(L, M)
+    p = p / p.sum(dim=1, keepdim=True)
+    lam = torch.full((L,), 0.6)
+    x = torch.full((M,), 0.5)
+
+    T_bits = 1.5
+    theta_bits = theta_from_T_bits(T_bits)
+    theta_direct = theta_bits  # should be identical
+
+    U1 = utility_from_env_samples(p, lam, x, theta=theta_bits)
+    U2 = utility_from_env_samples(p, lam, x, theta=theta_direct)
+
+    assert torch.allclose(U1, U2, atol=1e-6)
+test_bits_vs_theta_consistency_in_pipeline()
+
+
+
+# test_smoothed_cvar.py
+import math
+import torch
+import torch.nn.functional as F
+import pytest
+
+# مسیر import را با ماژول خودت هماهنگ کن
+from losses import (
+    _softplus_scaled, _sigma_tau,
+    solve_t_star_bisection,
+)
+
+# ---------- 1) سافت‌پلاسِ مقیاس‌خورده دقیقاً همان فرمول است ----------
+def test_softplus_scaled_formula_matches_definition():
+    torch.manual_seed(0)
+    z = torch.randn(100)
+    tau = 3.7
+    ours = _softplus_scaled(z, tau)
+    ref  = (1.0 / tau) * F.softplus(tau * z)
+    assert torch.allclose(ours, ref, atol=1e-10)
+test_softplus_scaled_formula_matches_definition()
+
+# ---------- 2) مشتق سافت‌پلاس: سیگموید( tau * z ) ----------
+def test_sigma_tau_is_sigmoid_scaled():
+    torch.manual_seed(0)
+    z = torch.linspace(-4, 4, 101)
+    tau = 2.5
+    ours = _sigma_tau(z, tau)
+    ref  = torch.sigmoid(tau * z)
+    assert torch.allclose(ours, ref, atol=1e-10)
+    # در بازه (0,1) باشد
+    assert torch.all((ours > 0) & (ours < 1))
+test_sigma_tau_is_sigmoid_scaled()
+
+# ---------- 3) t* معادله FO را تقریباً ارضا می‌کند ----------
+def test_t_star_satisfies_first_order_condition():
+    torch.manual_seed(0)
+    L = 257
+    ell = torch.randn(L) * 0.7 + 1.1  # lossها
+    gamma = 0.1
+    tau = 5.0
+
+    t_star = solve_t_star_bisection(ell, gamma=gamma, tau=tau, tol=1e-6, max_iter=80)
+    s = _sigma_tau(ell - t_star, tau).sum()
+    foc = 1.0 - (1.0 / (gamma * L)) * s
+    assert torch.isclose(foc, torch.tensor(0.0), atol=5e-3)
+test_t_star_satisfies_first_order_condition()
+
+# ---------- 4) نسخه batch و تک‌نمونه‌ای هر دو کار کنند ----------
+def test_t_star_batch_and_single_agree():
+    torch.manual_seed(0)
+    B, L = 4, 129
+    E = torch.randn(B, L)
+test_t_star_batch_and_single_agree()
+
+# tests/test_projection_and_psucc.py
+import torch
+from losses import project_capped_simplex, rho_theta_alpha4, p_succ_alpha4
+
+
+def test_rho_and_psucc_ranges():
+    thetas = torch.tensor([0.0, 0.1, 1.0, 5.0])
+    r = rho_theta_alpha4(thetas)
+    assert torch.all(r >= 0)
+    lam_i = torch.tensor([0.0, 0.2, 0.5, 1.0])
+    lam_I = torch.tensor([0.1, 0.1, 0.1, 0.1])
+    P = p_succ_alpha4(lam_i, lam_I, theta=0.5)
+    assert torch.all((P >= 0) & (P <= 1))

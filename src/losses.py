@@ -46,13 +46,8 @@ def project_capped_simplex(y: torch.Tensor, S: float, tol: float = 1e-6, max_ite
         Projected vector(s), same dtype/device as y.
     """
     single = (y.dim() == 1)
-    if single:
-        y_ = y.unsqueeze(0)  # shape (1, M)
-    else:
-        y_ = y
-
-    device = y_.device
-    dtype = y_.dtype
+    y_ = y.unsqueeze(0) if single else y  # (B, M)
+    device, dtype = y_.device, y_.dtype
     B, M = y_.shape
 
     # trivial cases
@@ -61,38 +56,48 @@ def project_capped_simplex(y: torch.Tensor, S: float, tol: float = 1e-6, max_ite
     if S >= float(M):
         return torch.ones_like(y)
 
-    # clamp to [0,1] first; if sum <= S we're done
+    # clamp to [0,1]; rows already within the cap are done
     y_clamped = torch.clamp(y_, 0.0, 1.0)
     row_sums = y_clamped.sum(dim=1)
     mask_done = (row_sums <= S)
-
     x = y_clamped.clone()
 
-    # for rows that need projection, do bisection to find theta
     need_proj_idx = (~mask_done).nonzero(as_tuple=False).squeeze(1)
     if need_proj_idx.numel() == 0:
         return x.squeeze(0) if single else x
 
-    # process each row needing projection (loop over only necessary rows; M is typically moderate)
+    S_t = torch.as_tensor(S, dtype=dtype, device=device)
+
+    # process only rows that require projection
     for idx in need_proj_idx.tolist():
-        vec = y_[idx]
-        # initial bounds for theta
-        theta_lo = (vec - 1.0).min().item()  # ensures some slack
-        theta_hi = vec.max().item()
+        vec = y_[idx]  # shape (M,)
+
+        # torch scalars (0-D tensors) for bounds
+        theta_lo = (vec - 1.0).min()    # ensures some slack
+        theta_hi = vec.max()
+
+        # fixed-iteration bisection fully in torch
         for _ in range(max_iter):
             theta = 0.5 * (theta_lo + theta_hi)
             candidate = torch.clamp(vec - theta, 0.0, 1.0)
-            s = candidate.sum().item()
-            if s > S:
-                theta_lo = theta
-            else:
-                theta_hi = theta
-            if (theta_hi - theta_lo) < tol:
-                break
+            s = candidate.sum()  # 0-D tensor
+
+            # update bounds without Python branching
+            greater = (s > S_t)
+            theta_lo = torch.where(greater, theta, theta_lo)
+            theta_hi = torch.where(greater, theta_hi, theta)
+
+            # optional early stop (kept purely in torch)
+            # NOTE: we avoid Python `if` on tensors; run full max_iter for purity
+            # converged = (theta_hi - theta_lo).abs() < tol
+            # theta_lo = torch.where(converged, theta_lo, theta_lo)
+            # theta_hi = torch.where(converged, theta_hi, theta_hi)
+
         theta = 0.5 * (theta_lo + theta_hi)
         x[idx] = torch.clamp(vec - theta, 0.0, 1.0)
 
     return x.squeeze(0) if single else x
+
 
 # ----------------------------
 # Closed-form P_succ for alpha = 4 and Rayleigh interferers

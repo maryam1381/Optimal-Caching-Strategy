@@ -43,6 +43,7 @@ import torch.nn.functional as F
 # -------------------------
 # Helpers and small utils
 # -------------------------
+# this function is the same as the one in the losses.py
 def softplus_scaled(z: torch.Tensor, tau: float) -> torch.Tensor:
     """
     Softplus surrogate s_tau(z) = (1/tau) * log(1 + exp(tau * z)).
@@ -181,114 +182,136 @@ def train_loop(
       None (saves checkpoints in config.checkpoint_dir)
     """
     device = torch.device(config.device)
-    model = model.to(device)
-
+    model.to(device)
     os.makedirs(config.checkpoint_dir, exist_ok=True)
 
     N = dataset_q.shape[0]
-    indices = np.arange(N) # make np array 0 to n-1
+    idx_all = np.arange(N)
 
-    # convert env_pool to in-memory numpy arrays for fast indexing
-    env_pool_list = list(env_pool)
-    pool_size = len(env_pool_list)
-    rng = np.random.default_rng(seed=12345)
+    # --- stack env pool to arrays for fast gather ---
+    pool_list = list(env_pool)
+    N_pool = len(pool_list)
+    assert N_pool > 0, "env_pool is empty"
+    p_pool = np.stack([p for (p, _) in pool_list], axis=0).astype(np.float32)   # (N_pool, M)
+    lam_pool = np.array([lam for (_, lam) in pool_list], dtype=np.float32)      # (N_pool,)
 
-    # helper to sample L indices
-    def sample_env_indices(L):
-        return rng.integers(0, pool_size, size=L) 
-        # maryam : make sure that samples are not the same => use replace=False
+    rng = np.random.default_rng(12345)
 
-    # training
+    # sampling helper
+    def sample_env_indices(B: int, L: int) -> np.ndarray:
+        if config.sample_without_replacement and L <= N_pool:
+            # different set per row; still vectorized
+            inds = np.vstack([rng.choice(N_pool, size=L, replace=False) for _ in range(B)])
+        else:
+            inds = rng.integers(0, N_pool, size=(B, L))
+        return inds
+
     for epoch in range(1, config.epochs + 1):
         t0 = time.time()
         model.train()
-
-        # shuffle dataset indices
-        rng.shuffle(indices)
+        rng.shuffle(idx_all)
 
         epoch_loss = 0.0
         num_batches = 0
 
         for start in range(0, N, config.batch_size):
-            batch_idx = indices[start:start + config.batch_size]
-            batch_q = dataset_q[batch_idx]  # shape (B, input_dim)
-            B_actual = batch_q.shape[0]
+            sel = idx_all[start:start + config.batch_size]
+            q_batch = dataset_q[sel]                        # (B, in_dim)
+            B = q_batch.shape[0]
 
             optimizer.zero_grad()
-            J_sum = torch.tensor(0.0, device=device)  # accumulate J_b (CVaR objective) over batch
 
-            # Process each measurement q in the minibatch (can be vectorized further)
-            for q_np in batch_q:
-                # 1) forward through model -> raw scores y, project to feasible x
-                q_t = torch.from_numpy(q_np).float().to(device).unsqueeze(0)  # (1, in_dim)
-                y = model(q_t).squeeze(0)  # (M,)
-                x = project_fn(y, S)      # returns (M,) on same device
+            # (1) Forward entire batch → y → project to x
+            q_t = torch.from_numpy(q_batch).float().to(device)     # (B, in_dim)
+            y   = model(q_t)                                       # (B, M)
+            # projection is per-row; keep in torch so grads flow through clamp region
+            x_rows = [project_fn(y[b], S) for b in range(B)]
+            x = torch.stack(x_rows, dim=0)                         # (B, M)
 
-                # 2) sample L posterior scenarios from env_pool
-                inds = sample_env_indices(config.L)
-                u_list = []
-                for s in inds:
-                    p_s, lam_s = env_pool_list[0][int(s)],env_pool_list[1][int(s)]
-                    # convert to torch tensors on device
-                    p_t = torch.from_numpy(np.asarray(p_s, dtype=np.float32)).to(device)  # (M,)
-                    lam_t = torch.tensor(float(lam_s), dtype=torch.float32, device=device)
-                    # 3) compute per-scenario utility (scalar)
-                    u_s = compute_utility_fn(p_t, lam_t, x)  # must return torch scalar
-                    # ensure scalar tensor
-                    u_list.append(u_s)
+            # (2) Sample L envs per batch row, gather p, lambda
+            inds = sample_env_indices(B, config.L)                 # (B, L)
+            p_batch_np   = p_pool[inds]                            # (B, L, M)
+            lam_batch_np = lam_pool[inds]                          # (B, L)
 
-                u = torch.stack(u_list, dim=0).view(-1)  # (L,)
+            p_batch   = torch.from_numpy(p_batch_np).to(device)    # (B, L, M)
+            lam_batch = torch.from_numpy(lam_batch_np).to(device)  # (B, L)
+            x_exp     = x[:, None, :]                              # (B, 1, M) for broadcast
 
-                # 4) inner solve for t* (smoothed CVaR)
-                t_star = find_t_star_smoothed(u, gamma=config.gamma_tail, tau=config.tau)
-                # compute surrogate objective value J_b = t_star - (1/(gamma L)) sum_s s_tau(t_star - u_s)
-                # Use softplus_scaled (handles beta=tau)
-                svals = softplus_scaled(t_star - u, config.tau)  # (L,)
-                J_b = t_star - (1.0 / (config.gamma_tail * float(u.shape[0]))) * torch.sum(svals)
+            # (3) Compute utilities for all (B,L) scenarios
+            # Preferred: compute_utility_fn supports vectorized inputs and returns (B,L)
+            U = None
+            try:
+                U = compute_utility_fn(p_batch, lam_batch, x_exp)  # expect (B, L)
+                if not (torch.is_tensor(U) and U.shape == (B, config.L)):
+                    U = None
+            except Exception:
+                U = None
 
-                # Treat t_star as fixed (we detached in solver), so J_b graph flows only w.r.t. u -> Theta
-                J_sum = J_sum + J_b
+            if U is None:
+                # Fallback: loop over L or (B,L) with minimal Python overhead
+                U_list = []
+                for l in range(config.L):
+                    p_l   = p_batch[:, l, :]                 # (B, M)
+                    lam_l = lam_batch[:, l]                  # (B,)
+                    try:
+                        # allow a (B,M),(B,) path
+                        U_l = compute_utility_fn(p_l, lam_l, x)    # (B,)
+                        if not (torch.is_tensor(U_l) and U_l.shape == (B,)):
+                            raise RuntimeError
+                    except Exception:
+                        # final fallback: loop across B
+                        u_rows = []
+                        for b in range(B):
+                            u_rows.append(compute_utility_fn(p_l[b], lam_l[b], x[b]))
+                        U_l = torch.stack(u_rows, dim=0)
+                    U_list.append(U_l)
+                U = torch.stack(U_list, dim=1)               # (B, L)
 
-            # average over batch and convert to minimization loss
-            J_batch_mean = J_sum / float(B_actual)
-            loss = -J_batch_mean  # we maximize CVaR; optimizer minimizes -CVaR
+            # (4) Per-row 1-D inner solve for t* and CVaR objective J_b
+            J_rows = []
+            for b in range(B):
+                u_b = U[b]                                   # (L,)
+                t_star = find_t_star_smoothed(u_b, gamma=config.gamma_tail, tau=config.tau)
+                svals  = softplus_scaled(t_star - u_b, config.tau)  # (L,)
+                J_b    = t_star - (1.0 / (config.gamma_tail * float(u_b.numel()))) * svals.sum()
+                J_rows.append(J_b)
+            J = torch.stack(J_rows, dim=0).mean()            # mean over B
+
+            # (5) Convert to loss (maximize J → minimize -J), backprop, clip, step
+            loss = -J
             loss.backward()
-
-            # gradient clipping
-            if config.clip_grad_norm is not None and config.clip_grad_norm > 0.0:
+            if config.clip_grad_norm and config.clip_grad_norm > 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), config.clip_grad_norm)
-
             optimizer.step()
 
-            epoch_loss += loss.item()
+            epoch_loss += float(loss.detach().cpu())
             num_batches += 1
 
-        # epoch stats
-        epoch_time = time.time() - t0
-        avg_loss = epoch_loss / max(1, num_batches)
-
         if config.verbose:
-            print(f"[Epoch {epoch:03d}] loss={avg_loss:.6f} time={epoch_time:.1f}s")
+            print(f"[Epoch {epoch:03d}] loss={epoch_loss/max(1,num_batches):.6f} "
+                  f"time={time.time()-t0:.1f}s")
 
-        # validation / checkpoint
+        # Optional validation + checkpoint
         if (val_dataset_q is not None) and (epoch % config.validate_every == 0):
             model.eval()
             if eval_fn is not None:
-                metrics = eval_fn(model, val_dataset_q, env_pool_list, project_fn, compute_utility_fn, S,
-                                  gamma=config.gamma_tail, device=device)
-                print(f"  Validation: {metrics}")
-            # save checkpoint
-            ckpt_path = os.path.join(config.checkpoint_dir, f"ckpt_epoch{epoch:03d}.pt")
-            torch.save({'epoch': epoch, 'model_state': model.state_dict(),
-                        'optimizer_state': optimizer.state_dict()}, ckpt_path)
+                metrics = eval_fn(
+                    model, val_dataset_q, pool_list, project_fn, compute_utility_fn, S,
+                    gamma=config.gamma_tail, device=device
+                )
+                print("  Validation:", metrics)
+            ckpt = {
+                "epoch": epoch,
+                "model_state": model.state_dict(),
+                "optimizer_state": optimizer.state_dict(),
+                "config": config.__dict__,
+            }
+            os.makedirs(config.checkpoint_dir, exist_ok=True)
+            torch.save(ckpt, os.path.join(config.checkpoint_dir, f"ckpt_epoch_{epoch:03d}.pt"))
 
     # final save
-    final_path = os.path.join(config.checkpoint_dir, "final_model.pt")
-    torch.save({'epoch': config.epochs, 'model_state': model.state_dict(),
-                'optimizer_state': optimizer.state_dict()}, final_path)
-    print(f"Training finished. Final model saved to {final_path}")
-
-
+    torch.save({"epoch": config.epochs, "model_state": model.state_dict()},
+               os.path.join(config.checkpoint_dir, "final_model.pt"))
 # -------------------------
 # Example evaluation function
 # -------------------------
