@@ -228,7 +228,7 @@ def train_loop(
                 inds = sample_env_indices(config.L)
                 u_list = []
                 for s in inds:
-                    p_s, lam_s = env_pool_list[int(s)]
+                    p_s, lam_s = env_pool_list[0][int(s)],env_pool_list[1][int(s)]
                     # convert to torch tensors on device
                     p_t = torch.from_numpy(np.asarray(p_s, dtype=np.float32)).to(device)  # (M,)
                     lam_t = torch.tensor(float(lam_s), dtype=torch.float32, device=device)
