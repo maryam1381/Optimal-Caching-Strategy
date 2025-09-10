@@ -160,23 +160,57 @@ if __name__ == "__main__":
 
 
 
+
+
+import pytest
 import torch
-from losses import project_capped_simplex
+import numpy as np
+from losses import project_capped_simplex  # Replace with the actual import for project_capped_simplex
 
 def test_trivial_cases():
     y = torch.tensor([0.2, 0.5])
     assert torch.allclose(project_capped_simplex(y, 0.0), torch.zeros_like(y))
     assert torch.allclose(project_capped_simplex(y, 2.0), torch.ones_like(y))
 
-def test_projection_sum_and_bounds():
-    y = torch.tensor([0.2, 1.5, -0.3, 0.8])
-    S = 1.0
+@pytest.mark.parametrize('y', [torch.randn(5)])  # Parametrize the input for multiple test cases if needed
+def test_trivial_zero_sum(y):
+    """Test for zero sum input."""
+    result = project_capped_simplex(y, 0)
+    assert torch.allclose(result, torch.zeros_like(y)), f"Expected zeros, got {result}"
+
+
+@pytest.mark.parametrize('y, S', [(
+    torch.tensor([-0.5, 0.3, 1.7, 0.8]), 5  # Number of elements in y + 1
+)])
+def test_trivial_large_S(y, S):
+    """Test for large S where all values should be capped to 1."""
+    result = project_capped_simplex(y, S)
+    expected = torch.ones_like(y)
+    assert torch.allclose(result, expected), f"Expected ones, got {result}"
+
+
+@pytest.mark.parametrize('y, S', [(
+    torch.tensor([0.2, 0.5, 0.7, 1.5, -0.3], dtype=torch.float32), 2.0
+)])
+def test_interior_projection(y, S):
+    """Test for projection within the simplex."""
     x = project_capped_simplex(y, S)
-    assert torch.all(x >= 0) and torch.all(x <= 1)
-    assert torch.isclose(x.sum(), torch.tensor(S))
+    
+    # Check sum equals the target S
+    assert torch.isclose(x.sum(), torch.tensor(S), atol=1e-5), f"Sum mismatch: expected {S}, got {x.sum()}"
+    
+    # Ensure values are within [0, 1]
+    assert torch.all((0 <= x) & (x <= 1)), f"Values out of bounds: {x}"
+    
+    # Check interior values
+    interior = (x > 0) & (x < 1)
+    if interior.any():
+        tau = (y[interior] - x[interior]).mean()
+        assert torch.allclose(x[interior], y[interior] - tau, atol=1e-6), f"Projection mismatch for interior: {x[interior]} vs {y[interior] - tau}"
+        assert torch.all(y[x == 0] <= tau + 1e-6), f"Incorrect boundary values: {x[x == 0]}"
+        assert torch.all(y[x == 1] >= 1 + tau - 1e-6), f"Incorrect boundary values: {x[x == 1]}"
 
 test_trivial_cases()
-test_projection_sum_and_bounds()
 print("Done")
 
 
