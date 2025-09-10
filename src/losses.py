@@ -21,76 +21,70 @@ import torch.nn.functional as F
 # ----------------------------
 # Projection onto capped simplex
 # ----------------------------
-# the output is the same as my first code and I have done a test on it 
-def project_capped_simplex(y: torch.Tensor, S: float, tol: float = 1e-6, max_iter: int = 60) -> torch.Tensor:
-    """
-    Euclidean projection of y onto { x in [0,1]^M : sum_i x_i <= S }.
+# the output is the same as my first code and I have done a test on it
+def project_capped_simplex(y: torch.Tensor, S: float) -> torch.Tensor:
+    """Project ``y`` onto ``{x in [0,1]^M : sum_i x_i <= S}``.
 
-    Implements a scalar bisection on theta for x_i = clip(y_i - theta, 0,1).
-    This returns a tensor of same shape as y.
+    Uses the sorting-based projection algorithm of Duchi et al. (2008),
+    fully vectorized across the batch dimension. All operations are kept
+    in torch to preserve gradients and device agnosticism.
 
     Parameters
     ----------
-    y : torch.Tensor (M,) or (batch, M)
+    y : torch.Tensor (M,) or (B, M)
         Input (unconstrained) vector(s).
     S : float
-        Sum upper-bound (0 <= S <= M).
-    tol : float
-        Stopping tolerance for theta.
-    max_iter : int
-        Maximum bisection iterations.
+        Sum upper-bound (``0 <= S <= M``).
 
     Returns
     -------
     x : torch.Tensor
-        Projected vector(s), same dtype/device as y.
+        Projected vector(s), same dtype/device as ``y``.
     """
-    single = (y.dim() == 1)
+
+    single = y.dim() == 1
     if single:
-        y_ = y.unsqueeze(0)  # shape (1, M)
+        y_ = y.unsqueeze(0)
     else:
         y_ = y
 
-    device = y_.device
-    dtype = y_.dtype
-    B, M = y_.shape
+    device, dtype = y_.device, y_.dtype
+    M = y_.shape[1]
 
-    # trivial cases
+    # Trivial extremes
     if S <= 0:
         return torch.zeros_like(y)
     if S >= float(M):
         return torch.ones_like(y)
 
-    # clamp to [0,1] first; if sum <= S we're done
-    y_clamped = torch.clamp(y_, 0.0, 1.0)
+    S_t = torch.tensor(float(S), dtype=dtype, device=device)
+
+    # Clamp into the box first. Rows already satisfying the sum constraint
+    # remain unchanged.
+    y_clamped = y_.clamp(0.0, 1.0)
     row_sums = y_clamped.sum(dim=1)
-    mask_done = (row_sums <= S)
+    mask_done = row_sums <= S_t
+
+    if mask_done.all():
+        return y_clamped.squeeze(0) if single else y_clamped
 
     x = y_clamped.clone()
 
-    # for rows that need projection, do bisection to find theta
-    need_proj_idx = (~mask_done).nonzero(as_tuple=False).squeeze(1)
-    if need_proj_idx.numel() == 0:
-        return x.squeeze(0) if single else x
+    # Process only rows needing projection.
+    y_need = y_clamped[~mask_done]
 
-    # process each row needing projection (loop over only necessary rows; M is typically moderate)
-    for idx in need_proj_idx.tolist():
-        vec = y_[idx]
-        # initial bounds for theta
-        theta_lo = (vec - 1.0).min().item()  # ensures some slack
-        theta_hi = vec.max().item()
-        for _ in range(max_iter):
-            theta = 0.5 * (theta_lo + theta_hi)
-            candidate = torch.clamp(vec - theta, 0.0, 1.0)
-            s = candidate.sum().item()
-            if s > S:
-                theta_lo = theta
-            else:
-                theta_hi = theta
-            if (theta_hi - theta_lo) < tol:
-                break
-        theta = 0.5 * (theta_lo + theta_hi)
-        x[idx] = torch.clamp(vec - theta, 0.0, 1.0)
+    # Sort in descending order and compute cumulative sums.
+    y_sorted, _ = torch.sort(y_need, dim=1, descending=True)
+    cssv = y_sorted.cumsum(dim=1)
+
+    j = torch.arange(1, M + 1, device=device, dtype=dtype).view(1, -1)
+    cond = y_sorted - (cssv - S_t) / j > 0
+    rho = cond.type(torch.int64).sum(dim=1)
+
+    theta = (cssv[torch.arange(rho.numel()), rho - 1] - S_t) / rho.to(dtype)
+
+    x_proj = torch.clamp(y_need - theta.unsqueeze(1), 0.0, 1.0)
+    x[~mask_done] = x_proj
 
     return x.squeeze(0) if single else x
 
