@@ -107,6 +107,8 @@ def to_torch(a: np.ndarray, device: Optional[torch.device] = None, dtype: torch.
     Returns:
         torch.Tensor
     """
+    if torch.is_tensor(a):
+        return a
     t = torch.as_tensor(np.asarray(a), dtype=dtype)
     if device is not None:
         t = t.to(device)

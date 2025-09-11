@@ -30,6 +30,7 @@ from dataclasses import dataclass
 
 import torch
 import torch.nn.functional as F
+from src.utils import to_torch
 
 # Project utils assumed in losses.py
 # from src.losses import project_capped_simplex, softplus_scaled
@@ -148,6 +149,7 @@ class TrainConfig:
     validate_every: int = 1     # run validation every N epochs
     warmstart_epochs: int = 0   # number of pretrain epochs to regress to posterior-mean optimum
     verbose: bool = True
+    sample_without_replacement: bool = True
 
 
 def train_loop(
@@ -189,12 +191,9 @@ def train_loop(
     idx_all = np.arange(N)
 
     # --- stack env pool to arrays for fast gather ---
-    pool_list = list(env_pool)
-    N_pool = len(pool_list)
+    p_pool, lam_pool= env_pool
+    N_pool = len(p_pool)
     assert N_pool > 0, "env_pool is empty"
-    p_pool = np.stack([p for (p, _) in pool_list], axis=0).astype(np.float32)   # (N_pool, M)
-    lam_pool = np.array([lam for (_, lam) in pool_list], dtype=np.float32)      # (N_pool,)
-
     rng = np.random.default_rng(12345)
 
     # sampling helper
@@ -223,18 +222,22 @@ def train_loop(
 
             # (1) Forward entire batch → y → project to x
             q_t = torch.from_numpy(q_batch).float().to(device)     # (B, in_dim)
-            y   = model(q_t)                                       # (B, M)
+            y = model(q_t,)  
+            y = softplus_scaled(y, tau=1e-2)
+            # print("y sample:", y[0][:10].detach().cpu().numpy())  
+            # print("y sample:", y[0][:5].detach().cpu().numpy())                                   # (B, M)
             # projection is per-row; keep in torch so grads flow through clamp region
             x_rows = [project_fn(y[b], S) for b in range(B)]
             x = torch.stack(x_rows, dim=0)                         # (B, M)
+            # print("x sample:", x[0][:5].detach().cpu().numpy())
 
             # (2) Sample L envs per batch row, gather p, lambda
             inds = sample_env_indices(B, config.L)                 # (B, L)
             p_batch_np   = p_pool[inds]                            # (B, L, M)
             lam_batch_np = lam_pool[inds]                          # (B, L)
 
-            p_batch   = torch.from_numpy(p_batch_np).to(device)    # (B, L, M)
-            lam_batch = torch.from_numpy(lam_batch_np).to(device)  # (B, L)
+            p_batch   = to_torch(p_batch_np,   device)  # (B, L, M)
+            lam_batch = to_torch(lam_batch_np,   device)   # (B, L)
             x_exp     = x[:, None, :]                              # (B, 1, M) for broadcast
 
             # (3) Compute utilities for all (B,L) scenarios
@@ -296,7 +299,7 @@ def train_loop(
             model.eval()
             if eval_fn is not None:
                 metrics = eval_fn(
-                    model, val_dataset_q, pool_list, project_fn, compute_utility_fn, S,
+                    model, val_dataset_q, list(zip(p_pool,lam_pool)), project_fn, compute_utility_fn, S,
                     gamma=config.gamma_tail, device=device
                 )
                 print("  Validation:", metrics)
@@ -329,7 +332,7 @@ def evaluate_model_simple(model, val_dataset_q, env_pool_list, project_fn, compu
     model.eval()
 
     results = []
-    rng = np.random.default_rng(0)
+    rng = np.random.default_rng()
     pool_size = len(env_pool_list)
     for q_np in val_dataset_q:
         with torch.no_grad():
@@ -361,7 +364,7 @@ def evaluate_model_simple(model, val_dataset_q, env_pool_list, project_fn, compu
         'mean_utility_mean': float(arr[:, 0].mean()),
         'mean_utility_std': float(arr[:, 0].std()),
         f'VaR_{gamma}': float(arr[:, 1].mean()),
-        f'CVaR_{gamma}': float(arr[:, 2].mean())
+        f'CVaR_{gamma}': float(arr[:, 2].mean()),
     }
     return metrics
 
@@ -386,8 +389,8 @@ if __name__ == "__main__":
     env_pool = list(build_env_pool_simulated(N_pool=200, M=M, W=100, zipf_exponent=1.0, a0_lambda=1, b0_lambda=1, a0_p=10, lambda_true=2.0))
     # toy dataset of q: here we use p concatenated with one lambda measurement (just demo)
     p , lam = env_pool
-    dataset_q = np.vstack([np.concatenate([p, np.array([lam])]) for (p, lam) in env_pool[:100]])
-    config = TrainConfig(N_pool=200, L=64, batch_size=8, gamma_tail=0.05, tau=8.0, epochs=2,
+    dataset_q = np.column_stack((p[:100], lam[:100]))
+    config = TrainConfig(N_pool=200, L=64, batch_size=8, gamma_tail=0.05, tau=8.0, epochs=5,
                          lr=1e-3, device="cpu", checkpoint_dir="./checkpoints_toy", verbose=True)
 
     train_loop(model, optimizer, env_pool, dataset_q, S=5.0, compute_utility_fn=toy_utility,

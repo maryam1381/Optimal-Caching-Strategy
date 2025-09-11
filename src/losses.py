@@ -125,6 +125,18 @@ def rho_theta_alpha4(theta: float or torch.Tensor) -> torch.Tensor:
     safe = torch.clamp(theta_t, min=0.0)
     return torch.sqrt(safe) * (0.5 * math.pi - torch.atan(1.0 / torch.sqrt(safe + 1e-30)))
 
+
+def _Q_torch_safe(z: torch.Tensor, eps: float = 1e-12) -> torch.Tensor:
+    """
+    Numerically stable Gaussian complementary CDF Q(z).
+    Uses asymptotic approximation for large z.
+    """
+    standard = 0.5 * (1.0 - torch.erf(z / math.sqrt(2.0)))
+    asymptotic = torch.exp(-z**2 / 2) / (z * math.sqrt(2 * math.pi))
+    use_asymptotic = z > 6.0
+    q = torch.where(use_asymptotic, asymptotic, standard)
+    return torch.clamp(q, min=eps)
+
 def p_succ_alpha4(
     lam_i: torch.Tensor,
     lam_I: torch.Tensor,
@@ -136,58 +148,97 @@ def p_succ_alpha4(
 ) -> torch.Tensor:
     """
     Compute per-file success probability under alpha=4 closed-form kernel.
-
-    Formula (vectorized):
-      P_succ = (pi^{3/2} * lam_i / sqrt(b)) * exp(a^2/(4b)) * Q(a / sqrt(2b))
-    where
-      a = pi * (lam_i + lam_I * rho(theta,4))
-      b = mu * theta * N0 / P_t  (scalar >0)
-    Inputs lam_i and lam_I are torch tensors that broadcast to the same shape.
-
-    Parameters
-    ----------
-    lam_i : torch.Tensor
-        intensity of helpers for the file (can be per-env vector)
-    lam_I : torch.Tensor
-        interfering intensity (same shape or broadcastable)
-    theta : float
-        SINR threshold (linear, e.g., 2^T - 1)
-    P_t, N0, mu : floats
-    eps : small value to avoid division by zero
-
-    Returns
-    -------
-    P_succ : torch.Tensor (same shape as lam_i broadcasted)
+    Uses log-domain computation for numerical stability.
     """
-    # ensure tensors
-    lam_i_t = lam_i
-    lam_I_t = lam_I
+    device = lam_i.device
+    dtype = lam_i.dtype
 
-    device = lam_i_t.device
-    dtype = lam_i_t.dtype
+    # Compute scalar b
+    b = mu * theta * (N0 / P_t)
+    b_t = torch.tensor(max(b, eps), dtype=dtype, device=device)
 
-    theta_t = torch.tensor(float(theta), dtype=dtype, device=device)
+    # Compute a = π * (lam_i + lam_I * rho)
+    theta_t = torch.tensor(theta, dtype=dtype, device=device)
+    rho = rho_theta_alpha4(theta_t)  # scalar
+    a = math.pi * (lam_i + lam_I * rho)
 
-    rho = rho_theta_alpha4(theta_t)  # scalar tensor
-    a = math.pi * (lam_i_t + lam_I_t * rho)  # same shape as lam_i
-    b = (mu * float(theta) * (N0 / float(P_t)))
-    # ensure b positive scalar
-    b_t = torch.tensor(float(max(b, eps)), dtype=dtype, device=device)
-
-    # compute Q argument
+    # Compute z = a / sqrt(2b)
     denom = torch.sqrt(2.0 * b_t)
-    z = a / denom
+    z = torch.clamp(a / denom, max=12.0)  # clamp to avoid log(0)
 
-    pref = (math.pi ** 1.5) * lam_i_t / torch.sqrt(b_t)
-    # numerical stability: cap very large exponents
-    exponent = (a * a) / (4.0 * b_t)
-    # clamp exponent to avoid inf:
-    exponent = torch.clamp(exponent, max=50.0)  # safe ceiling
-    P_succ = pref * torch.exp(exponent) * _Q_torch(z)
+    # Compute log(P_succ)
+    pref = (math.pi ** 1.5) * lam_i / torch.sqrt(b_t)
+    exponent = torch.clamp((a ** 2) / (4.0 * b_t), max=50.0)
+    log_P_succ = torch.log(pref + eps) + exponent + torch.log(_Q_torch_safe(z, eps))
 
-    # enforce [0,1]
-    P_succ = torch.clamp(P_succ, min=0.0, max=1.0)
-    return P_succ
+    # Final success probability
+    P_succ = torch.exp(log_P_succ)
+    return torch.clamp(P_succ, min=0.0, max=1.0)
+
+# def p_succ_alpha4(
+#     lam_i: torch.Tensor,
+#     lam_I: torch.Tensor,
+#     theta: float,
+#     P_t: float = 1.0,
+#     N0: float = 1e-9,
+#     mu: float = 1.0,
+#     eps: float = 1e-12
+# ) -> torch.Tensor:
+#     """
+#     Compute per-file success probability under alpha=4 closed-form kernel.
+
+#     Formula (vectorized):
+#       P_succ = (pi^{3/2} * lam_i / sqrt(b)) * exp(a^2/(4b)) * Q(a / sqrt(2b))
+#     where
+#       a = pi * (lam_i + lam_I * rho(theta,4))
+#       b = mu * theta * N0 / P_t  (scalar >0)
+#     Inputs lam_i and lam_I are torch tensors that broadcast to the same shape.
+
+#     Parameters
+#     ----------
+#     lam_i : torch.Tensor
+#         intensity of helpers for the file (can be per-env vector)
+#     lam_I : torch.Tensor
+#         interfering intensity (same shape or broadcastable)
+#     theta : float
+#         SINR threshold (linear, e.g., 2^T - 1)
+#     P_t, N0, mu : floats
+#     eps : small value to avoid division by zero
+
+#     Returns
+#     -------
+#     P_succ : torch.Tensor (same shape as lam_i broadcasted)
+#     """
+#     # ensure tensors
+#     lam_i_t = lam_i
+#     lam_I_t = lam_I
+
+#     device = lam_i_t.device
+#     dtype = lam_i_t.dtype
+
+#     theta_t = torch.tensor(float(theta), dtype=dtype, device=device)
+
+#     rho = rho_theta_alpha4(theta_t)  # scalar tensor
+#     a = math.pi * (lam_i_t + lam_I_t * rho)  # same shape as lam_i
+#     b = (mu * float(theta) * (N0 / float(P_t)))
+#     # ensure b positive scalar
+#     b_t = torch.tensor(float(max(b, eps)), dtype=dtype, device=device)
+
+#     # compute Q argument
+#     denom = torch.sqrt(2.0 * b_t)
+#     z = a / denom
+
+#     pref = (math.pi ** 1.5) * lam_i_t / torch.sqrt(b_t)
+#     # numerical stability: cap very large exponents
+#     exponent = (a * a) / (4.0 * b_t)
+#     # clamp exponent to avoid inf:
+#     exponent = torch.clamp(exponent, max=50.0)  # safe ceiling
+#     # P_succ = pref * torch.exp(exponent) * _Q_torch(z)
+#     log_P_succ = torch.log(pref) + exponent + torch.log(_Q_torch(z))
+#     P_succ = torch.exp(log_P_succ)
+#     # enforce [0,1]
+#     P_succ = torch.clamp(P_succ, min=0.0, max=1.0)
+#     return P_succ
 
 # ----------------------------
 # Utility evaluation from a single x and many env samples
@@ -251,6 +302,24 @@ def utility_from_env_samples(
     # ensure numerical safety
     U = torch.clamp(U, 0.0, 1.0)
     return U
+
+import torch
+import numpy as np
+
+M = 10
+p = np.random.dirichlet(np.ones(M))
+lam = 2.5
+x = np.random.rand(M)
+x = x / x.sum() * 10  # make sure sum(x) ≈ S
+
+# Convert to torch tensors
+p_torch = torch.tensor(p, dtype=torch.float32).unsqueeze(0)      # shape (1, M)
+lam_torch = torch.tensor([lam], dtype=torch.float32)             # shape (1,)
+x_torch = torch.tensor(x, dtype=torch.float32)                   # shape (M,)
+
+# Call the function
+u = utility_from_env_samples(p_torch, lam_torch, x_torch)
+print("Test utility:", u.item())
 
 # ----------------------------
 # Smoothed CVaR loss (minimize)

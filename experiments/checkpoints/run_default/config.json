@@ -14,7 +14,7 @@
   "gamma": 0.05,
   "tau": 0.01,
   "lr": 0.001,
-  "epochs": 100,
+  "epochs": 40,
   "S_cache": 10,
   "hidden_small": true,
   "dropout": 0.0,

@@ -48,7 +48,7 @@ import numpy as np
 import torch
 
 from src.losses import project_capped_simplex, utility_from_env_samples
-from src.train import TrainConfig
+from src.train import TrainConfig, evaluate_model_simple
 
 # Make repo root and src discoverable even if user runs script from another cwd
 REPO_ROOT = Path(__file__).resolve().parent
@@ -152,7 +152,7 @@ DEFAULT_CONFIG = {
     "gamma": 0.05,
     "tau": 1e-2,
     "lr": 1e-3,
-    "epochs": 100,
+    "epochs": 40,
     "S_cache": 10,
     "hidden_small": True,
     "dropout": 0.0,
@@ -295,19 +295,11 @@ def main(config: Dict[str, Any]):
             compute_utility_fn=utility_from_env_samples,
             project_fn=project_capped_simplex,
             config=train_config,
-            val_dataset_q=None,
+            val_dataset_q=dataset[:20],
+            eval_fn=evaluate_model_simple
         )
     except TypeError:
-        print(f"[main] error in train loop at the 301.")
-        # fallback: try positional or simplified signature
-        # try:
-        #     sig = inspect.signature(train_mod.train_loop)
-        #     print(f"[main] train.train signature: {sig}. Attempting positional fallback.")
-        # except Exception:
-        #     print(f"[main] error in train loop")
-        #     pass
-        # fallback simple attempt; student should adapt if their train API is custom
-        # train_mod.train_loop(model, dataset, pool_args, save_dir, env_pool)
+        print(f"[Error] in train loop at the 301.")
 
     print("[main] training finished. Check the save directory for outputs.")
 
