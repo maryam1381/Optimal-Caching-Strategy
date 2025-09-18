@@ -82,6 +82,7 @@ def find_t_star_smoothed(u: torch.Tensor, gamma: float, tau: float,
     L = float(u.shape[0])
     # bracket: t in [min(u) - R, max(u) + R]
     umin, umax = u.min().item(), u.max().item()
+    # print("umin:", umin, "umax:", umax)
     R = max(1.0, 0.1 * (umax - umin + 1e-6))
     left = umin - R
     right = umax + R
@@ -100,6 +101,7 @@ def find_t_star_smoothed(u: torch.Tensor, gamma: float, tau: float,
     # Ensure sign difference
     g_left = g(left_t).item()
     g_right = g(right_t).item()
+    # print(f"g_left: {g_left}, g_right: {g_right}")
     # if g_left * g_right > 0, expand bracket (rare)
     expand = 0
     while g_left * g_right > 0 and expand < 10:
@@ -139,7 +141,7 @@ class TrainConfig:
     L: int = 500                # number of posterior draws per measurement
     batch_size: int = 16
     gamma_tail: float = 0.05    # CVaR level (e.g., 0.05)
-    tau: float = 20.0           # softplus sharpness (recommend 5-20). larger->closer to hinge
+    tau: float = 5           # softplus sharpness (recommend 5-20). larger->closer to hinge
     epochs: int = 100
     lr: float = 1e-3
     weight_decay: float = 1e-4
@@ -223,7 +225,7 @@ def train_loop(
             # (1) Forward entire batch → y → project to x
             q_t = torch.from_numpy(q_batch).float().to(device)     # (B, in_dim)
             y = model(q_t,)  
-            y = softplus_scaled(y, tau=1e-2)
+            y = softplus_scaled(y, tau=config.tau)
             # print("y sample:", y[0][:10].detach().cpu().numpy())  
             # print("y sample:", y[0][:5].detach().cpu().numpy())                                   # (B, M)
             # projection is per-row; keep in torch so grads flow through clamp region

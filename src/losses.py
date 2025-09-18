@@ -175,71 +175,6 @@ def p_succ_alpha4(
     P_succ = torch.exp(log_P_succ)
     return torch.clamp(P_succ, min=0.0, max=1.0)
 
-# def p_succ_alpha4(
-#     lam_i: torch.Tensor,
-#     lam_I: torch.Tensor,
-#     theta: float,
-#     P_t: float = 1.0,
-#     N0: float = 1e-9,
-#     mu: float = 1.0,
-#     eps: float = 1e-12
-# ) -> torch.Tensor:
-#     """
-#     Compute per-file success probability under alpha=4 closed-form kernel.
-
-#     Formula (vectorized):
-#       P_succ = (pi^{3/2} * lam_i / sqrt(b)) * exp(a^2/(4b)) * Q(a / sqrt(2b))
-#     where
-#       a = pi * (lam_i + lam_I * rho(theta,4))
-#       b = mu * theta * N0 / P_t  (scalar >0)
-#     Inputs lam_i and lam_I are torch tensors that broadcast to the same shape.
-
-#     Parameters
-#     ----------
-#     lam_i : torch.Tensor
-#         intensity of helpers for the file (can be per-env vector)
-#     lam_I : torch.Tensor
-#         interfering intensity (same shape or broadcastable)
-#     theta : float
-#         SINR threshold (linear, e.g., 2^T - 1)
-#     P_t, N0, mu : floats
-#     eps : small value to avoid division by zero
-
-#     Returns
-#     -------
-#     P_succ : torch.Tensor (same shape as lam_i broadcasted)
-#     """
-#     # ensure tensors
-#     lam_i_t = lam_i
-#     lam_I_t = lam_I
-
-#     device = lam_i_t.device
-#     dtype = lam_i_t.dtype
-
-#     theta_t = torch.tensor(float(theta), dtype=dtype, device=device)
-
-#     rho = rho_theta_alpha4(theta_t)  # scalar tensor
-#     a = math.pi * (lam_i_t + lam_I_t * rho)  # same shape as lam_i
-#     b = (mu * float(theta) * (N0 / float(P_t)))
-#     # ensure b positive scalar
-#     b_t = torch.tensor(float(max(b, eps)), dtype=dtype, device=device)
-
-#     # compute Q argument
-#     denom = torch.sqrt(2.0 * b_t)
-#     z = a / denom
-
-#     pref = (math.pi ** 1.5) * lam_i_t / torch.sqrt(b_t)
-#     # numerical stability: cap very large exponents
-#     exponent = (a * a) / (4.0 * b_t)
-#     # clamp exponent to avoid inf:
-#     exponent = torch.clamp(exponent, max=50.0)  # safe ceiling
-#     # P_succ = pref * torch.exp(exponent) * _Q_torch(z)
-#     log_P_succ = torch.log(pref) + exponent + torch.log(_Q_torch(z))
-#     P_succ = torch.exp(log_P_succ)
-#     # enforce [0,1]
-#     P_succ = torch.clamp(P_succ, min=0.0, max=1.0)
-#     return P_succ
-
 # ----------------------------
 # Utility evaluation from a single x and many env samples
 # ----------------------------
@@ -247,7 +182,7 @@ def utility_from_env_samples(
     p_samples: torch.Tensor,
     lam_samples: torch.Tensor,
     x: torch.Tensor,
-    theta: float = 0.414,
+    theta: float = 1,
     lambda_I_factor: float = 1.0,
     P_t: float = 1.0,
     N0: float = 1e-9,

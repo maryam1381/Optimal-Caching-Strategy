@@ -1,0 +1,53 @@
+Test utility: 1.0
+[main] using device: cpu; seed: 42
+[main] config saved to experiments\checkpoints\run_default\config.json
+[main] building environment posterior pool...
+[main] env pool built: 2 samples
+[main] saved env pool preview to experiments\checkpoints\run_default\env_pool_preview.npz
+d:\Github\Optimal-Caching-Strategy\main.py:179: DeprecationWarning: Conversion of an array with ndim > 0 to a scalar is deprecated, and will error in future. Ensure you extract a single element from your array before performing this operation. (Deprecated NumPy 1.25.)
+  dataset[i, M] = K_norm
+[main] synthetic dataset built: (1000, 101)
+[main] building model...
+[main] model created and moved to device.
+[main] calling training routine...
+[Epoch 001] loss=396.545078 time=12.2s
+  Validation: {'mean_utility_mean': 0.3551074443459511, 'mean_utility_std': 0.0023464954478257883, 'VaR_0.05': 0.31306506872177126, 'CVaR_0.05': 0.30139514327049255}
+[Epoch 002] loss=396.279051 time=11.6s
+  Validation: {'mean_utility_mean': 0.5533957799747586, 'mean_utility_std': 0.0016952528111480332, 'VaR_0.05': 0.5055417300760745, 'CVaR_0.05': 0.4922749176621438}
+[Epoch 003] loss=396.144782 time=11.9s
+  Validation: {'mean_utility_mean': 0.5594463577866556, 'mean_utility_std': 0.0021997170463935807, 'VaR_0.05': 0.5118131010234356, 'CVaR_0.05': 0.4983992847800255}
+[Epoch 004] loss=396.053738 time=11.9s
+  Validation: {'mean_utility_mean': 0.5729309686794876, 'mean_utility_std': 0.002374669990723322, 'VaR_0.05': 0.5259887918829917, 'CVaR_0.05': 0.5132462660968303}
+[Epoch 005] loss=396.053735 time=11.9s
+  Validation: {'mean_utility_mean': 0.5462110739797353, 'mean_utility_std': 0.002828170810704029, 'VaR_0.05': 0.496871539130807, 'CVaR_0.05': 0.4852055776119232}
+[Epoch 006] loss=396.053724 time=11.9s
+  Validation: {'mean_utility_mean': 0.5760036605075001, 'mean_utility_std': 0.002018159059944521, 'VaR_0.05': 0.5302620746195316, 'CVaR_0.05': 0.5177320708334446}
+[Epoch 007] loss=396.053742 time=11.7s
+  Validation: {'mean_utility_mean': 0.5697755597382784, 'mean_utility_std': 0.001921387838278206, 'VaR_0.05': 0.5217034728825093, 'CVaR_0.05': 0.51013917863369}
+[Epoch 008] loss=396.053763 time=11.6s
+  Validation: {'mean_utility_mean': 0.5636595009118318, 'mean_utility_std': 0.0019252153547936076, 'VaR_0.05': 0.5172792759537697, 'CVaR_0.05': 0.5058513525128364}
+[Epoch 009] loss=396.053702 time=11.7s
+  Validation: {'mean_utility_mean': 0.6022058231085538, 'mean_utility_std': 0.0029297582385033353, 'VaR_0.05': 0.5573981274664402, 'CVaR_0.05': 0.5432566732168198}
+[Epoch 010] loss=396.053696 time=11.7s
+  Validation: {'mean_utility_mean': 0.603634232789278, 'mean_utility_std': 0.0017949990168632224, 'VaR_0.05': 0.5586927285790443, 'CVaR_0.05': 0.5454503858089448}
+[Epoch 011] loss=396.053695 time=11.6s
+  Validation: {'mean_utility_mean': 0.5968380682617426, 'mean_utility_std': 0.0014914826279096112, 'VaR_0.05': 0.5524711631238459, 'CVaR_0.05': 0.5414270117878914}
+[Epoch 012] loss=396.053760 time=12.2s
+  Validation: {'mean_utility_mean': 0.5225756319165231, 'mean_utility_std': 0.002187789216495985, 'VaR_0.05': 0.4778400091081857, 'CVaR_0.05': 0.46709063515067095}
+[Epoch 013] loss=396.053717 time=11.8s
+  Validation: {'mean_utility_mean': 0.4964600875005126, 'mean_utility_std': 0.00165569880609583, 'VaR_0.05': 0.4508059805631638, 'CVaR_0.05': 0.4383254526555538}
+[Epoch 014] loss=396.051698 time=11.7s
+  Validation: {'mean_utility_mean': 0.5803775860592721, 'mean_utility_std': 0.0018965948377274579, 'VaR_0.05': 0.5329019792377948, 'CVaR_0.05': 0.5219398836791516}
+[Epoch 015] loss=396.050533 time=11.6s
+  Validation: {'mean_utility_mean': 0.5513299785926937, 'mean_utility_std': 0.0019783766651449335, 'VaR_0.05': 0.5040081688016653, 'CVaR_0.05': 0.4926856692135334}
+[Epoch 016] loss=396.050446 time=11.8s
+  Validation: {'mean_utility_mean': 0.4589954946339131, 'mean_utility_std': 0.002420668328496647, 'VaR_0.05': 0.414171030446887, 'CVaR_0.05': 0.4009052737057209}
+[Epoch 017] loss=396.050485 time=12.0s
+  Validation: {'mean_utility_mean': 0.2405163626112044, 'mean_utility_std': 0.0019632578957528273, 'VaR_0.05': 0.18917226854711772, 'CVaR_0.05': 0.1754431893676519}
+[Epoch 018] loss=396.050464 time=11.6s
+  Validation: {'mean_utility_mean': 0.0586633436656557, 'mean_utility_std': 0.0008753679891828483, 'VaR_0.05': 0.04197566249407828, 'CVaR_0.05': 0.03816971336491406}
+[Epoch 019] loss=396.050451 time=12.1s
+  Validation: {'mean_utility_mean': 0.045496799248736355, 'mean_utility_std': 0.0006524924937099031, 'VaR_0.05': 0.02938470668625086, 'CVaR_0.05': 0.026077826162800195}
+[Epoch 020] loss=396.050066 time=14.0s
+  Validation: {'mean_utility_mean': 0.05136091953655705, 'mean_utility_std': 0.0008026809678200069, 'VaR_0.05': 0.03338173779658974, 'CVaR_0.05': 0.029791380809620023}
+[main] training finished. Check the save directory for outputs.

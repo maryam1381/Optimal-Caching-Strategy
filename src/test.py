@@ -359,7 +359,7 @@ from losses import (
     solve_t_star_bisection,
 )
 
-# ---------- 1) سافت‌پلاسِ مقیاس‌خورده دقیقاً همان فرمول است ----------
+
 def test_softplus_scaled_formula_matches_definition():
     torch.manual_seed(0)
     z = torch.randn(100)
@@ -369,7 +369,6 @@ def test_softplus_scaled_formula_matches_definition():
     assert torch.allclose(ours, ref, atol=1e-10)
 test_softplus_scaled_formula_matches_definition()
 
-# ---------- 2) مشتق سافت‌پلاس: سیگموید( tau * z ) ----------
 def test_sigma_tau_is_sigmoid_scaled():
     torch.manual_seed(0)
     z = torch.linspace(-4, 4, 101)
@@ -377,11 +376,11 @@ def test_sigma_tau_is_sigmoid_scaled():
     ours = _sigma_tau(z, tau)
     ref  = torch.sigmoid(tau * z)
     assert torch.allclose(ours, ref, atol=1e-10)
-    # در بازه (0,1) باشد
+
     assert torch.all((ours > 0) & (ours < 1))
 test_sigma_tau_is_sigmoid_scaled()
 
-# ---------- 3) t* معادله FO را تقریباً ارضا می‌کند ----------
+
 def test_t_star_satisfies_first_order_condition():
     torch.manual_seed(0)
     L = 257
@@ -395,7 +394,7 @@ def test_t_star_satisfies_first_order_condition():
     assert torch.isclose(foc, torch.tensor(0.0), atol=5e-3)
 test_t_star_satisfies_first_order_condition()
 
-# ---------- 4) نسخه batch و تک‌نمونه‌ای هر دو کار کنند ----------
+
 def test_t_star_batch_and_single_agree():
     torch.manual_seed(0)
     B, L = 4, 129
