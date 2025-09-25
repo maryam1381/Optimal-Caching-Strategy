@@ -3,7 +3,7 @@
 Utility helpers for Digital-Twin-assisted CVaR-robust D2D caching experiments.
 
 This module contains lightweight functions that are used across the codebase:
-  - reproducibility: set_seed
+  - reproducibility: set_seed, get_rng
   - device selection: get_device
   - tensor/array conversions: to_numpy, to_torch
   - checkpoint save/load for PyTorch models
@@ -38,28 +38,41 @@ import torch
 # ---------------------------------------------------------------------------
 # Reproducibility and device helpers
 # ---------------------------------------------------------------------------
+_GLOBAL_RNG = None
 
-def set_seed(seed: int) -> None:
+def set_seed(seed: int) -> np.random.Generator:
     """
-    Set the random seed for numpy, torch, and python's RNG (to the extent possible).
-
-    Args:
-        seed: integer seed
+    Set the random seed for numpy, torch, and python's RNG.
+    Returns: A new numpy.random.Generator instance for consistent use.
     """
-    np.random.seed(seed)
+    # Use a single, modern RNG instance
+    global _GLOBAL_RNG
+    _GLOBAL_RNG = np.random.default_rng(seed)
+    
+    # Set other seeds for consistency
     torch.manual_seed(seed)
     try:
         import random
         random.seed(seed)
     except Exception:
         pass
-    # If CUDA is present, ensure deterministic-ish behavior
+    
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
-        # The following two flags help reproducibility but may slow down training.
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
+    
+    return _GLOBAL_RNG
 
+def get_rng() -> np.random.Generator:
+    """
+    Return the global numpy.random.Generator instance.
+    Raises: RuntimeError if seed has not been set.
+    """
+    global _GLOBAL_RNG
+    if _GLOBAL_RNG is None:
+        raise RuntimeError("RNG has not been seeded. Call set_seed() first.")
+    return _GLOBAL_RNG
 
 def get_device(prefer_cuda: bool = True) -> torch.device:
     """

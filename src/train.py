@@ -33,7 +33,7 @@ import torch.nn.functional as F
 from src.utils import to_torch
 
 # Project utils assumed in losses.py
-# from src.losses import project_capped_simplex, softplus_scaled
+from src.losses import smoothed_cvar_loss_from_utilities, project_capped_simplex, softplus_scaled
 # from src.model import create_mlp
 # from src.env_pool import build_env_pool
 # from src.eval import evaluate_policy_batch  # optional
@@ -44,91 +44,9 @@ from src.utils import to_torch
 # -------------------------
 # Helpers and small utils
 # -------------------------
-# this function is the same as the one in the losses.py
-def softplus_scaled(z: torch.Tensor, tau: float) -> torch.Tensor:
-    """
-    Softplus surrogate s_tau(z) = (1/tau) * log(1 + exp(tau * z)).
-    Implement using torch.nn.functional.softplus with beta=tau.
-    Note: torch.nn.functional.softplus(x, beta) = (1/beta) * log(1 + exp(beta*x))
-    """
-    # ensure tau > 0
-    return F.softplus(z, beta=max(tau, 1e-12))
-
-
 def sigmoid_tau(z: torch.Tensor, tau: float) -> torch.Tensor:
     """Derivative of softplus_scaled: sigma_tau(z) = sigmoid(tau * z)."""
     return torch.sigmoid(tau * z)
-
-
-def find_t_star_smoothed(u: torch.Tensor, gamma: float, tau: float,
-                        max_iter: int = 60, tol: float = 1e-4) -> torch.Tensor:
-    """
-    Find t^* = argmax_t [ t - (1/(gamma L)) sum_s s_tau(t - u_s) ] via bisection.
-    We solve the first-order condition:  1 - (1/(gamma L)) sum_s sigma_tau(t - u_s) = 0.
-
-    Inputs:
-      u: (L,) tensor of utilities (on device)
-      gamma: tail probability (0<gamma<1)
-      tau: softplus beta parameter (>0). Larger tau -> sharper approximation.
-      max_iter, tol: bisection stopping criteria.
-
-    Returns:
-      scalar torch.Tensor t_star (detached; does not require grad)
-    """
-    # ensure u is 1D tensor
-    if u.dim() != 1:
-        u = u.view(-1)
-
-    L = float(u.shape[0])
-    # bracket: t in [min(u) - R, max(u) + R]
-    umin, umax = u.min().item(), u.max().item()
-    # print("umin:", umin, "umax:", umax)
-    R = max(1.0, 0.1 * (umax - umin + 1e-6))
-    left = umin - R
-    right = umax + R
-
-    # convert to tensors on same device dtype
-    device = u.device
-    left_t = torch.tensor(left, device=device)
-    right_t = torch.tensor(right, device=device)
-
-    # bisection on scalar t: evaluate g(t) = 1 - (1/(gamma L)) sum sigma_tau(t - u)
-    def g(t: torch.Tensor) -> torch.Tensor:
-        # t is scalar tensor
-        vals = sigmoid_tau(t - u, tau)  # (L,)
-        return 1.0 - (1.0 / (gamma * L)) * torch.sum(vals)
-
-    # Ensure sign difference
-    g_left = g(left_t).item()
-    g_right = g(right_t).item()
-    # print(f"g_left: {g_left}, g_right: {g_right}")
-    # if g_left * g_right > 0, expand bracket (rare)
-    expand = 0
-    while g_left * g_right > 0 and expand < 10:
-        expand += 1
-        R *= 2.0
-        left_t = torch.tensor(umin - R, device=device)
-        right_t = torch.tensor(umax + R, device=device)
-        g_left = g(left_t).item()
-        g_right = g(right_t).item()
-
-    # Bisection loop
-    for _ in range(max_iter):
-        mid = 0.5 * (left_t + right_t)
-        val = g(mid)
-        if abs(val.item()) < tol:
-            break
-        # choose side where root lies
-        if g_left * val.item() <= 0:
-            right_t = mid
-            g_right = val.item()
-        else:
-            left_t = mid
-            g_left = val.item()
-
-    t_star = 0.5 * (left_t + right_t)
-    # detach to stop gradients through inner solver (envelope theorem)
-    return t_star.detach()
 
 
 # -------------------------
@@ -157,12 +75,13 @@ class TrainConfig:
 def train_loop(
     model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
-    env_pool: Sequence[Tuple[np.ndarray, float]],
+    env_pool: Tuple[np.ndarray, np.ndarray],
     dataset_q: np.ndarray,
     S: float,
     compute_utility_fn,
     project_fn,
     config: TrainConfig,
+    rng: np.random.Generator,
     val_dataset_q: Optional[np.ndarray] = None,
     eval_fn=None
 ) -> None:
@@ -172,13 +91,14 @@ def train_loop(
     Args:
       model: PyTorch model mapping q -> raw scores y (shape (batch, M))
       optimizer: optimizer for model parameters
-      env_pool: list-like of (p_vector (np.array length M), lambda_scalar) pairs
+      env_pool: tuple of numpy arrays (P_pool, LAM_pool)
       dataset_q: numpy array of measurements q (shape [N_measurements, input_dim])
       S: cache capacity (expected). Projection target sum <= S.
       compute_utility_fn: callable (p:torch.Tensor, lam:torch.Tensor, x:torch.Tensor) -> utility scalar
                           Must accept p shape (M,), lam scalar tensor, x shape (M,) and return scalar tensor
       project_fn: callable project_capped_simplex(y: torch.Tensor, S: float) -> x:torch.Tensor
       config: TrainConfig dataclass
+      rng: numpy.random.Generator instance for reproducibility
       val_dataset_q: optional validation dataset (numpy)
       eval_fn: optional evaluation function used for validation (model, val_dataset, env_pool, S) -> metrics dict
 
@@ -196,7 +116,6 @@ def train_loop(
     p_pool, lam_pool= env_pool
     N_pool = len(p_pool)
     assert N_pool > 0, "env_pool is empty"
-    rng = np.random.default_rng(12345)
 
     # sampling helper
     def sample_env_indices(B: int, L: int) -> np.ndarray:
@@ -224,9 +143,9 @@ def train_loop(
 
             # (1) Forward entire batch → y → project to x
             q_t = torch.from_numpy(q_batch).float().to(device)     # (B, in_dim)
-            y = model(q_t,)  
+            y = model(q_t,)
             y = softplus_scaled(y, tau=config.tau)
-            # print("y sample:", y[0][:10].detach().cpu().numpy())  
+            # print("y sample:", y[0][:10].detach().cpu().numpy())
             # print("y sample:", y[0][:5].detach().cpu().numpy())                                   # (B, M)
             # projection is per-row; keep in torch so grads flow through clamp region
             x_rows = [project_fn(y[b], S) for b in range(B)]
@@ -272,18 +191,10 @@ def train_loop(
                     U_list.append(U_l)
                 U = torch.stack(U_list, dim=1)               # (B, L)
 
-            # (4) Per-row 1-D inner solve for t* and CVaR objective J_b
-            J_rows = []
-            for b in range(B):
-                u_b = U[b]                                   # (L,)
-                t_star = find_t_star_smoothed(u_b, gamma=config.gamma_tail, tau=config.tau)
-                svals  = softplus_scaled(t_star - u_b, config.tau)  # (L,)
-                J_b    = t_star - (1.0 / (config.gamma_tail * float(u_b.numel()))) * svals.sum()
-                J_rows.append(J_b)
-            J = torch.stack(J_rows, dim=0).mean()            # mean over B
+            # (4) Compute CVaR loss from utilities
+            loss, _ = smoothed_cvar_loss_from_utilities(U, gamma=config.gamma_tail, tau=config.tau)
 
-            # (5) Convert to loss (maximize J → minimize -J), backprop, clip, step
-            loss = -J
+            # (5) Backprop, clip, step
             loss.backward()
             if config.clip_grad_norm and config.clip_grad_norm > 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), config.clip_grad_norm)
@@ -300,9 +211,11 @@ def train_loop(
         if (val_dataset_q is not None) and (epoch % config.validate_every == 0):
             model.eval()
             if eval_fn is not None:
+                # Pass a list of tuples to the evaluation function as it expects it
+                env_pool_list = list(zip(p_pool, lam_pool))
                 metrics = eval_fn(
-                    model, val_dataset_q, list(zip(p_pool,lam_pool)), project_fn, compute_utility_fn, S,
-                    gamma=config.gamma_tail, device=device
+                    model, val_dataset_q, env_pool_list, project_fn, compute_utility_fn, S,
+                    gamma=config.gamma_tail, device=device, rng=rng
                 )
                 print("  Validation:", metrics)
             ckpt = {
@@ -321,7 +234,7 @@ def train_loop(
 # Example evaluation function
 # -------------------------
 def evaluate_model_simple(model, val_dataset_q, env_pool_list, project_fn, compute_utility_fn, S,
-                          gamma=0.05, device=torch.device("cpu"), n_env_eval=200):
+                          gamma=0.05, device=torch.device("cpu"), n_env_eval=200, rng=np.random.default_rng()):
     """
     Simple evaluation: for each q in val_dataset, draw n_env_eval scenario draws
     and compute the realized utility distribution under the policy x = Project(model(q)).
@@ -334,7 +247,6 @@ def evaluate_model_simple(model, val_dataset_q, env_pool_list, project_fn, compu
     model.eval()
 
     results = []
-    rng = np.random.default_rng()
     pool_size = len(env_pool_list)
     for q_np in val_dataset_q:
         with torch.no_grad():
@@ -388,14 +300,15 @@ if __name__ == "__main__":
     in_extra = 1
     model, optimizer = create_mlp(M=M, in_extra=in_extra, lr=1e-3, weight_decay=1e-4)
     # make toy env_pool
-    env_pool = list(build_env_pool_simulated(N_pool=200, M=M, W=100, zipf_exponent=1.0, a0_lambda=1, b0_lambda=1, a0_p=10, lambda_true=2.0))
+    env_pool = build_env_pool_simulated(N_pool=200, M=M, W=100, zipf_exponent=1.0, a0_lambda=1, b0_lambda=1, a0_p=10, lambda_true=2.0)
     # toy dataset of q: here we use p concatenated with one lambda measurement (just demo)
     p , lam = env_pool
     dataset_q = np.column_stack((p[:100], lam[:100]))
     config = TrainConfig(N_pool=200, L=64, batch_size=8, gamma_tail=0.05, tau=8.0, epochs=5,
                          lr=1e-3, device="cpu", checkpoint_dir="./checkpoints_toy", verbose=True)
+    rng = np.random.default_rng(config.seed)
 
     train_loop(model, optimizer, env_pool, dataset_q, S=5.0, compute_utility_fn=toy_utility,
-               project_fn=project_capped_simplex, config=config,
+               project_fn=project_capped_simplex, config=config, rng=rng,
                val_dataset_q=dataset_q[:20],
                eval_fn=evaluate_model_simple)

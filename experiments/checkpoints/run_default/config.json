@@ -12,7 +12,7 @@
   "batch_size": 16,
   "L": 100,
   "gamma": 0.05,
-  "tau": 0.01,
+  "tau": 5,
   "lr": 0.001,
   "epochs": 20,
   "S_cache": 10,

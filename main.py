@@ -1,3 +1,4 @@
+# main.py
 # #!/usr/bin/env python3
 """
 main.py — Top-level experiment orchestration for the Digital-Twin-assisted
@@ -49,90 +50,16 @@ import torch
 
 from src.losses import project_capped_simplex, utility_from_env_samples
 from src.train import TrainConfig, evaluate_model_simple
+from src import env_pool as env_pool_mod
+from src import model as model_mod
+from src import train as train_mod
+from src import utils as utils_mod
 
 # Make repo root and src discoverable even if user runs script from another cwd
 REPO_ROOT = Path(__file__).resolve().parent
 SRC_PATH = REPO_ROOT / "src"
 sys.path.insert(0, str(SRC_PATH))
 sys.path.insert(0, str(REPO_ROOT))
-
-# Try to import local modules; if missing, provide friendly messages / minimal fallbacks
-missing = []
-try:
-    from src import env_pool as env_pool_mod
-except Exception as e:
-    env_pool_mod = None
-    missing.append(("src.env_pool", e))
-
-try:
-    from src import model as model_mod
-except Exception as e:
-    model_mod = None
-    missing.append(("src.model", e))
-
-try:
-    from src import train as train_mod
-except Exception as e:
-    train_mod = None
-    missing.append(("src.train", e))
-
-try:
-    from src import utils as utils_mod
-except Exception as e:
-    utils_mod = None
-    missing.append(("src.utils", e))
-
-
-# Minimal fallback utilities if src.utils is missing (so error messages are clearer)
-if utils_mod is None:
-    class _UtilsFallback:
-        @staticmethod
-        def set_seed(seed: int):
-            np.random.seed(int(seed))
-            import random
-            random.seed(int(seed))
-            try:
-                import torch
-                torch.manual_seed(int(seed))
-                if torch.cuda.is_available():
-                    torch.cuda.manual_seed_all(int(seed))
-            except Exception:
-                pass
-
-        @staticmethod
-        def get_device(prefer_cuda: bool = True):
-            if prefer_cuda and torch.cuda.is_available():
-                return torch.device("cuda")
-            return torch.device("cpu")
-
-        @staticmethod
-        def ensure_dir(path: str):
-            Path(path).mkdir(parents=True, exist_ok=True)
-
-        @staticmethod
-        def save_json(path: str, obj: Dict[str, Any]):
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(obj, f, indent=2)
-
-    utils_mod = _UtilsFallback()
-    print("[main] WARNING: src.utils not found — using fallback minimal utils. "
-          "Prefer implementing src/utils.py for full behavior.")
-
-
-# If any critical modules are missing, provide a clear error before long runtime
-if env_pool_mod is None or model_mod is None or train_mod is None:
-    msg_lines = ["One or more required src modules could not be imported:"]
-    if env_pool_mod is None:
-        msg_lines.append(" - src.env_pool (needed to build environment pool)")
-    if model_mod is None:
-        msg_lines.append(" - src.model (needed to create the MLP model)")
-    if train_mod is None:
-        msg_lines.append(" - src.train (needed to run training)")
-    msg_lines.append("")
-    msg_lines.append("Make sure you run this script from the repository root and that 'src/' exists.")
-    msg_lines.append(f"Repo root: {REPO_ROOT}")
-    raise ImportError("\n".join(msg_lines))
-
 
 # -------------------------
 # Default experiment config
@@ -150,7 +77,7 @@ DEFAULT_CONFIG = {
     "batch_size": 16,
     "L": 100,
     "gamma": 0.05,
-    "tau": 1e-2,
+    "tau": 5,
     "lr": 1e-3,
     "epochs": 20,
     "S_cache": 10,
@@ -168,20 +95,21 @@ def build_synthetic_dataset_from_pool(pool: list, dataset_size: int, M: int, W: 
     P_pool, LAM_pool = pool
     dataset = np.zeros((dataset_size, M + 1), dtype=np.float32)
     for i in range(dataset_size):
-        idx = int(rng.integers(0, len(pool)))
+        idx = int(rng.integers(0, len(P_pool)))
         p_true = P_pool[idx]
         p_true = np.asarray(p_true, dtype=np.float64)
         n = rng.multinomial(W, p_true)
         K = int(rng.poisson(lam=lambda_true * A_user))
         n_norm = n / (W + 1e-12)
-        K_norm = np.array([K / max(1.0, A_user)], dtype=np.float32)
+        K_norm = K / max(1.0, A_user)
         dataset[i, :M] = n_norm.astype(np.float32)
         dataset[i, M] = K_norm
     return dataset
 
 
 def main(config: Dict[str, Any]):
-    utils_mod.set_seed(int(config["seed"]))
+    # Use a modern, consistent RNG strategy
+    rng = utils_mod.set_seed(int(config["seed"]))
     device = utils_mod.get_device(prefer_cuda=True)
     print(f"[main] using device: {device}; seed: {config['seed']}")
 
@@ -198,7 +126,8 @@ def main(config: Dict[str, Any]):
     # -----------------------------
     print("[main] building environment posterior pool...")
 
-    pool_iter = env_pool_mod.build_env_pool_simulated(
+    # Corrected API usage: directly get the tuple of arrays. Pass the RNG instance.
+    env_pool = env_pool_mod.build_env_pool_simulated(
         N_pool=int(config["N_pool"]),
         M=int(config["M"]),
         W=int(config["W"]),
@@ -208,18 +137,17 @@ def main(config: Dict[str, Any]):
         b0_lambda=float(config.get("b0", 1.0)),
         A_obs=float(config.get("A_user", 1.0)),
         lambda_true=float(config.get("lambda_true", 1.0)),
-        rng_seed=int(config.get("seed", 0)),
-        as_torch=False   # return NumPy / Python objects
+        rng=rng,
+        as_torch=False  # return NumPy / Python objects
     )
-    # convert to list for repeated indexing
-    env_pool = list(pool_iter)
-    print(f"[main] env pool built: {len(env_pool)} samples")
+    P_pool, LAM_pool = env_pool
+    print(f"[main] env pool built: {len(P_pool)} samples")
 
     sample_save_path = save_dir / "env_pool_preview.npz"
     
-    P_pool, LAM_pool = env_pool
-    P_preview = np.stack([P_pool[:min(200, len(P_pool))]], axis=0)
-    L_preview = np.array([LAM_pool[:min(200, len(LAM_pool))]])
+    # Corrected preview saving without extra dimension
+    P_preview = P_pool[:min(200, len(P_pool))]
+    L_preview = LAM_pool[:min(200, len(LAM_pool))]
 
     np.savez_compressed(str(sample_save_path), P=P_preview, L=L_preview)
     print(f"[main] saved env pool preview to {sample_save_path}")
@@ -227,7 +155,7 @@ def main(config: Dict[str, Any]):
     # -----------------------------
     # 2) Build measurement dataset (simple synthetic)
     # -----------------------------
-    rng = np.random.default_rng(int(config["seed"]) + 1)
+    dataset_rng = np.random.default_rng(int(config["seed"]) + 1)
     dataset = build_synthetic_dataset_from_pool(
         pool=env_pool,
         dataset_size=int(config["dataset_size"]),
@@ -235,7 +163,7 @@ def main(config: Dict[str, Any]):
         W=int(config["W"]),
         A_user=float(config["A_user"]),
         lambda_true=float(config["lambda_true"]),
-        rng=rng,
+        rng=dataset_rng,
     )
     print(f"[main] synthetic dataset built: {dataset.shape}")
 
@@ -257,24 +185,9 @@ def main(config: Dict[str, Any]):
     # -----------------------------
     # 4) Call the training routine
     # -----------------------------
-    pool_args = {
-        "N_pool": int(config["N_pool"]),
-        "M": int(config["M"]),
-        "W": int(config["W"]),
-        "gamma_r": float(config["gamma_r"]),
-        "a0_p": float(config["a0_p"]),
-        "a0_lambda": float(config["a0_lambda"]),
-        "b0": float(config["b0"]),
-        "A_user": float(config["A_user"]),
-        "lambda_": float(config["lambda_true"]),
-        "rng_seed": int(config["seed"]),
-    }
-    pout_args = {}
-
     print("[main] calling training routine...")
-    # Try to call train with the signature used in the repo; fallback if signature differs
     try:
-        # attempt the full signature first (preferred)
+        # Corrected TrainConfig to use the computed device
         train_config = TrainConfig(N_pool=int(config["N_pool"]),
                                     L=int(config["L"]),
                                     batch_size=int(config["batch_size"]),
@@ -282,8 +195,8 @@ def main(config: Dict[str, Any]):
                                     tau=float(config["tau"]),
                                     epochs=int(config["epochs"]),
                                     lr=float(config["lr"]),
-                                    device="cpu",
-                                    checkpoint_dir="./checkpoints_toy", 
+                                    device=device.type,  # Pass the correct device
+                                    checkpoint_dir=str(save_dir/"checkpoints"), 
                                     verbose=True)
 
         train_mod.train_loop(
@@ -295,11 +208,13 @@ def main(config: Dict[str, Any]):
             compute_utility_fn=utility_from_env_samples,
             project_fn=project_capped_simplex,
             config=train_config,
+            rng=rng,
             val_dataset_q=dataset[:20],
             eval_fn=evaluate_model_simple
         )
-    except TypeError:
-        print(f"[Error] in train loop at the 301.")
+    except TypeError as e:
+        # Improved error message
+        print(f"An unexpected TypeError occurred in the training loop: {e}")
 
     print("[main] training finished. Check the save directory for outputs.")
 
@@ -349,3 +264,4 @@ if __name__ == "__main__":
         "lambda_true": args.lambda_true,
     })
     main(cfg)
+

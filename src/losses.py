@@ -259,7 +259,7 @@ print("Test utility:", u.item())
 # ----------------------------
 # Smoothed CVaR loss (minimize)
 # ----------------------------
-def _softplus_scaled(z: torch.Tensor, tau: float) -> torch.Tensor:
+def softplus_scaled(z: torch.Tensor, tau: float) -> torch.Tensor:
     """
     s_tau(z) = (1/tau) * log(1 + exp(tau * z))
     (softplus scaled so that s_tau(z) approximates (z)_+ for large tau).
@@ -321,7 +321,7 @@ def solve_t_star_bisection(
     # Adjust if endpoints do not bracket zero: expand interval
     # If f_lo < 0 and f_hi < 0 or both >0, adjust heuristically
     expand_iter = 0
-    while ((f_lo * f_hi) > 0) and (expand_iter < 10):
+    while torch.all((f_lo * f_hi) > 0) and (expand_iter < 10):
         # expand both sides
         t_lo = t_lo - (2.0 ** expand_iter)
         t_hi = t_hi + (2.0 ** expand_iter)
@@ -335,12 +335,11 @@ def solve_t_star_bisection(
         f_mid = f_val(t_mid)
         # where f_mid > 0, root lies to the right (we want f=0), so move lo up
         # but careful with sign: f = 1 - RHS. If f_mid > 0 => RHS < 1 => need to increase RHS => decrease t (since sigma(ell - t) increases when t decreases)
-        # After checking algebra, we can use sign test: if f_mid > 0 -> need to decrease t -> t_hi = t_mid
         # We'll instead use monotonic properties numerically by checking f_lo * f_mid <= 0
         cond = (f_lo * f_mid <= 0)
         # update intervals per element
         t_hi = torch.where(cond, t_mid, t_hi)
-        f_hi = torch.where(cond, f_mid, f_hi)
+        f_hi = torch.where(cond, f_hi, f_mid)
         t_lo = torch.where(cond, t_lo, t_mid)
         f_lo = torch.where(cond, f_lo, f_mid)
 
@@ -398,7 +397,7 @@ def smoothed_cvar_loss_from_utilities(
 
     # compute Phi(t_star) = t + (1/(gamma L)) sum s_tau(ell - t)
     t_star_col = t_star.view(-1, 1)
-    s_vals = _softplus_scaled(ell - t_star_col, tau)  # (B, L)
+    s_vals = softplus_scaled(ell - t_star_col, tau)  # (B, L)
     Phi = t_star + (1.0 / (gamma * float(L))) * s_vals.sum(dim=1)  # shape (B,)
 
     loss_mean = Phi.mean()

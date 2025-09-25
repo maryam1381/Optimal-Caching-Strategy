@@ -1,4 +1,4 @@
-# env_pool.py
+# src/env_pool.py
 """
 Environment-posterior sampling utilities for digital-twin experiments.
 
@@ -28,7 +28,7 @@ def dirichlet_posterior_samples_from_counts(
     n: np.ndarray,
     N_pool: int,
     alpha0: float = 1.0,
-    rng: Optional[np.random.RandomState] = None
+    rng: Optional[np.random.Generator] = None
 ) -> np.ndarray:
     """
     Draw i.i.d. samples from Dirichlet(alpha0 + n) using Gamma draws + normalization.
@@ -37,13 +37,13 @@ def dirichlet_posterior_samples_from_counts(
         n: array shape (M,) observed counts (non-negative integers).
         N_pool: number of posterior samples to draw.
         alpha0: symmetric Dirichlet prior concentration.
-        rng: optional numpy.RandomState for reproducibility.
+        rng: optional numpy.random.Generator for reproducibility.
 
     Returns:
         p_samples: np.ndarray shape (N_pool, M) with rows summing to 1.
     """
     if rng is None:
-        rng = np.random.RandomState()
+        rng = np.random.default_rng()
 
     n = np.asarray(n, dtype=float)
     M = n.size
@@ -64,7 +64,7 @@ def lambda_posterior_samples_from_count(
     a0: float = 1.0,
     b0: float = 1.0,
     A: float = 1.0,
-    rng: Optional[np.random.RandomState] = None
+    rng: Optional[np.random.Generator] = None
 ) -> np.ndarray:
     """
     Draw i.i.d. samples from Gamma(shape=a0 + K, rate=b0 + A) posterior.
@@ -75,13 +75,13 @@ def lambda_posterior_samples_from_count(
         N_pool: number of posterior samples.
         a0,b0: prior hyperparameters (shape, rate).
         A: observed area (so Poisson mean = lambda * A).
-        rng: optional numpy.RandomState.
+        rng: optional numpy.random.Generator.
 
     Returns:
         lambda_samples: np.ndarray shape (N_pool,) with positive floats.
     """
     if rng is None:
-        rng = np.random.RandomState()
+        rng = np.random.default_rng()
 
     shape = float(a0 + K)
     rate = float(b0 + A)   # rate parameter
@@ -98,7 +98,7 @@ def build_env_pool_from_obs(
     a0_lambda: float = 1.0,
     b0_lambda: float = 1.0,
     A_obs: float = 1.0,
-    rng_seed: Optional[int] = None,
+    rng: Optional[np.random.Generator] = None,
     as_torch: bool = True,
     device: Optional[torch.device] = None
 ) -> Tuple[np.ndarray, np.ndarray]:
@@ -112,7 +112,7 @@ def build_env_pool_from_obs(
         alpha0_p: Dirichlet prior concentration (popularity)
         a0_lambda, b0_lambda: Gamma prior hyperparams for lambda (shape, rate)
         A_obs: monitoring area (used in posterior for lambda)
-        rng_seed: optional integer seed for reproducibility
+        rng: optional numpy.random.Generator for reproducibility
         as_torch: if True, return torch tensors (float32), else numpy arrays
         device: torch.device to map tensors to (if as_torch=True). Default CPU.
 
@@ -122,7 +122,8 @@ def build_env_pool_from_obs(
           - LAM_pool: shape (N_pool,) intensities (positive floats)
         Types depend on as_torch flag.
     """
-    rng = np.random.RandomState(rng_seed)
+    if rng is None:
+        rng = np.random.default_rng()
 
     # ensure n is integer array
     n = np.asarray(n, dtype=int)
@@ -155,7 +156,7 @@ def build_env_pool_simulated(
     b0_lambda: float = 1.0,
     A_obs: float = 1.0,
     lambda_true: float = 1.0,
-    rng_seed: Optional[int] = None,
+    rng: Optional[np.random.Generator] = None,
     as_torch: bool = True,
     device: Optional[torch.device] = None
 ) -> Tuple[np.ndarray, np.ndarray]:
@@ -167,13 +168,14 @@ def build_env_pool_simulated(
         N_pool, M, W, zipf_exponent: simulation parameters
         priors and obs area : a0_p, a0_lambda, b0_lambda, A_obs
         lambda_true: ground-truth user density (used to simulate observed K)
-        rng_seed: optional seed
+        rng: optional numpy.random.Generator for reproducibility
         as_torch, device: output format
 
     Returns:
         (P_pool, LAM_pool) same as build_env_pool_from_obs
     """
-    rng = np.random.RandomState(rng_seed)
+    if rng is None:
+        rng = np.random.default_rng()
 
     # true popularity (Zipf)
     p_true = _zipf_probs(M, zipf_exponent)
@@ -191,7 +193,7 @@ def build_env_pool_simulated(
     return build_env_pool_from_obs(n=n, K=int(K), N_pool=N_pool,
                                    alpha0_p=a0_p, a0_lambda=a0_lambda,
                                    b0_lambda=b0_lambda, A_obs=A_obs,
-                                   rng_seed=rng_seed, as_torch=as_torch, device=device)
+                                   rng=rng, as_torch=as_torch, device=device)
 
 
 # small helpers --------------------------------------------------------------
@@ -262,10 +264,11 @@ def _test_build_env_pool():
     b0_l = 1.0
     A = 10.0
     lambda_true = 3.0
+    rng = np.random.default_rng(123)
     P_pool, LAM_pool = build_env_pool_simulated(
         N_pool=N_pool, M=M, W=W, zipf_exponent=gamma_r,
         a0_p=a0_p, a0_lambda=a0_l, b0_lambda=b0_l, A_obs=A,
-        lambda_true=lambda_true, rng_seed=123, as_torch=False
+        lambda_true=lambda_true, rng=rng, as_torch=False
     )
     # print("P pool : ",P_pool[:5])
     # print("Lam pool : ",LAM_pool[:5])
