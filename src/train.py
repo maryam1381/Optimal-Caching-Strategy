@@ -144,13 +144,9 @@ def train_loop(
             # (1) Forward entire batch → y → project to x
             q_t = torch.from_numpy(q_batch).float().to(device)     # (B, in_dim)
             y = model(q_t,)
-            y = softplus_scaled(y, tau=config.tau)
-            # print("y sample:", y[0][:10].detach().cpu().numpy())
-            # print("y sample:", y[0][:5].detach().cpu().numpy())                                   # (B, M)
-            # projection is per-row; keep in torch so grads flow through clamp region
+
             x_rows = [project_fn(y[b], S) for b in range(B)]
             x = torch.stack(x_rows, dim=0)                         # (B, M)
-            # print("x sample:", x[0][:5].detach().cpu().numpy())
 
             # (2) Sample L envs per batch row, gather p, lambda
             inds = sample_env_indices(B, config.L)                 # (B, L)
@@ -191,8 +187,21 @@ def train_loop(
                     U_list.append(U_l)
                 U = torch.stack(U_list, dim=1)               # (B, L)
 
-            # (4) Compute CVaR loss from utilities
+            # # (4) Compute CVaR loss from utilities
             loss, _ = smoothed_cvar_loss_from_utilities(U, gamma=config.gamma_tail, tau=config.tau)
+
+            # # (4) Per-row 1-D inner solve for t* and CVaR objective J_b
+            # J_rows = []
+            # for b in range(B):
+            #     u_b = U[b]                                   # (L,)
+            #     t_star = find_t_star_smoothed(u_b, gamma=config.gamma_tail, tau=config.tau)
+            #     svals  = softplus_scaled(t_star - u_b, config.tau)  # (L,)
+            #     J_b    = t_star - (1.0 / (config.gamma_tail * float(u_b.numel()))) * svals.sum()
+            #     J_rows.append(J_b)
+            # J = torch.stack(J_rows, dim=0).mean()            # mean over B
+
+            # # (5) Convert to loss (maximize J → minimize -J), backprop, clip, step
+            # loss = -J
 
             # (5) Backprop, clip, step
             loss.backward()

@@ -48,6 +48,8 @@ import inspect
 import numpy as np
 import torch
 
+from src.model_eval import evaluate_model
+from src.eval import batch_evaluate_model
 from src.losses import project_capped_simplex, utility_from_env_samples
 from src.train import TrainConfig, evaluate_model_simple
 from src import env_pool as env_pool_mod
@@ -77,7 +79,7 @@ DEFAULT_CONFIG = {
     "batch_size": 16,
     "L": 100,
     "gamma": 0.05,
-    "tau": 5,
+    "tau": 10,
     "lr": 1e-3,
     "epochs": 20,
     "S_cache": 10,
@@ -167,7 +169,7 @@ def main(config: Dict[str, Any]):
     )
     print(f"[main] synthetic dataset built: {dataset.shape}")
 
-
+    val_dataset_q = dataset[:20] 
     # -----------------------------
     # 3) Build model (MLP)
     # -----------------------------
@@ -210,13 +212,18 @@ def main(config: Dict[str, Any]):
             config=train_config,
             rng=rng,
             val_dataset_q=dataset[:20],
-            eval_fn=evaluate_model_simple
+            eval_fn=evaluate_model
         )
     except TypeError as e:
         # Improved error message
         print(f"An unexpected TypeError occurred in the training loop: {e}")
 
     print("[main] training finished. Check the save directory for outputs.")
+
+    # -----------------------------
+    # 5) Evaluate the final model on the validation set
+    # -----------------------------
+
 
 # -------------------------
 # CLI

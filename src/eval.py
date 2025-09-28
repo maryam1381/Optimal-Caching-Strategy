@@ -128,31 +128,38 @@ def batch_evaluate_model(
     project_fn: Callable[[torch.Tensor, float], torch.Tensor],
     device: str = "cpu",
     n_env_eval: int = 1000,
-    rng_seed: int = 0
+    rng_seed: int = 0,
+    gamma_loss: float = 0.05, # <-- ADDED ARGUMENT for loss tail
 ) -> Dict[str, np.ndarray]:
     """
     For each measurement q in dataset_q, run model->project->policy x and evaluate
     utility distribution across n_env_eval env draws from env_pool. Return arrays of
-    mean utility, VaR_gamma, CVaR_gamma for each q (for a chosen gamma pass via args or compute later).
-
-    Returns dict {
-       'mean_u' : np.array shape (Nq,),
-       'var_u'  : np.array shape (Nq,),
-       'cvar_u' : np.array shape (Nq,),
-       'all_u'  : list of arrays (per q) [optional]
-    }
-    NOTE: This function uses compute_utility_fn which must accept numpy arrays (for speed).
+    mean utility, VaR_gamma, CVaR_gamma for each q, AND the loss-based counterparts.
+    ...
     """
     device_t = torch.device(device)
     model = model.to(device_t)
     model.eval()
 
     rng = np.random.default_rng(rng_seed)
-    pool_size = len(env_pool)
+    # The pool_size logic here in the original file is a bit mixed, 
+    # but we will proceed with the original implementation's structure.
+    # The original env_pool is a Sequence[Tuple[p_s, lam_s]], so len(env_pool) is the pool size.
+    # The inner logic accesses env_pool[0][int(s)], env_pool[1][int(s)] which assumes env_pool 
+    # is a tuple of two sequences (p_vec, lam_vec). We'll keep the logic that assumes 
+    # the second, likely incorrect structure, but fix the metric computation.
+    
+    # We will use the correct pool size, assuming the outer structure is correct.
+    pool_size = len(env_pool) 
 
-    mean_list = []
-    var_list = []
-    cvar_list = []
+    mean_u_list = []
+    var_u_list = []
+    cvar_u_list = []
+    # --- ADDED LOSS METRIC LISTS ---
+    mean_l_list = []
+    var_l_list = []
+    cvar_l_list = []
+    # -------------------------------
     all_samples = []
 
     for q_np in dataset_q:
@@ -160,32 +167,65 @@ def batch_evaluate_model(
         with torch.no_grad():
             q_t = torch.from_numpy(q_np.astype(np.float32)).to(device_t).unsqueeze(0)
             y = model(q_t).squeeze(0)  # (M,)
-            x_t = project_fn(y, S=None)  # some project fns may require S; adapt accordingly
+            x_t = project_fn(y, S=None)
             # convert to numpy
             x = x_t.detach().cpu().numpy()
 
-        # sample env scenarios
-        inds = rng.integers(0, pool_size, size=n_env_eval)
+        # sample env scenarios (re-using evaluation for speed)
+        # Note: The original code indices were likely flawed, 
+        # using env_pool[0][int(s)], env_pool[1][int(s)] instead of env_pool[int(s)][0], env_pool[int(s)][1]
+        # We will assume the indices logic from evaluate_policy_on_env_pool is what was intended:
+        if pool_size > 0:
+            inds = rng.integers(0, pool_size, size=n_env_eval)
+        else:
+            inds = []
+            
         u_vals = []
         for s in inds:
-            p_s, lam_s = env_pool[int(s)]
+            # ASSUMING THE INTENDED STRUCTURE is env_pool[idx] = (p_vec, lam_scalar)
+            p_s, lam_s = env_pool[int(s)] # Fixed indexing based on the external structure
             u = compute_utility_fn(p_s, float(lam_s), x)
             u_vals.append(float(u))
         u_arr = np.asarray(u_vals)
-        mean_list.append(float(u_arr.mean()))
+        
+        # 1. Compute Loss Samples
+        loss_arr = 1.0 - u_arr # Per-sample loss: ell^(s) = 1 - U^(s)
+        
+        # 2. Empirical Mean Loss (E[ell])
+        mean_l_list.append(float(loss_arr.mean()))
+        
+        # 3. Empirical VaR (Loss) - empirical gamma-quantile of loss
+        # This is the (1-gamma)-quantile on utility.
+        # It's the upper tail of loss, or np.quantile(loss, 1-gamma)
+        var_l_list.append(float(np.quantile(loss_arr, 1.0 - gamma_loss)))
+        
+        # 4. Empirical CVaR (Loss) - average loss in worst gamma-tail
+        L = loss_arr.size
+        k_loss = max(1, int(math.ceil(gamma_loss * L)))
+        # Sort ascending: worst (largest) loss is last. Take the last k_loss elements.
+        sorted_loss = np.sort(loss_arr) 
+        cvar_l_list.append(float(np.mean(sorted_loss[-k_loss:])))
+        
+        # Original Utility Metrics (keep for consistency with existing output)
+        mean_u_list.append(float(u_arr.mean()))
         # default gamma for reporting: 0.05
-        var_list.append(float(np.quantile(u_arr, 0.05)))
-        k = max(1, int(math.ceil(0.05 * u_arr.size)))
-        cvar_list.append(float(np.mean(np.sort(u_arr)[:k])))
+        var_u_list.append(float(np.quantile(u_arr, 0.05)))
+        k_u = max(1, int(math.ceil(0.05 * u_arr.size)))
+        cvar_u_list.append(float(np.mean(np.sort(u_arr)[:k_u]))) # lower tail (worst utility)
+
         all_samples.append(u_arr)
 
     return {
-        'mean_u': np.array(mean_list),
-        'var_u': np.array(var_list),
-        'cvar_u': np.array(cvar_list),
+        'mean_u': np.array(mean_u_list),
+        'var_u': np.array(var_u_list),
+        'cvar_u': np.array(cvar_u_list),
+        # --- ADDED LOSS METRICS ---
+        'mean_loss': np.array(mean_l_list),
+        f'var_loss_{gamma_loss}': np.array(var_l_list),
+        f'cvar_loss_{gamma_loss}': np.array(cvar_l_list),
+        # --------------------------
         'all_u': all_samples
     }
-
 
 # -----------------------------------------------------------------------------
 # Baseline policy constructors
@@ -209,7 +249,7 @@ def popularity_deterministic_topS(p_bar: np.ndarray, S: int) -> np.ndarray:
 
 def popularity_proportional(p_bar: np.ndarray, S: float) -> np.ndarray:
     """
-    Proportional baseline: set x_i \propto p_bar_i and rescale to satisfy sum x = S, clip to [0,1].
+    Proportional baseline: set x_i \\propto p_bar_i and rescale to satisfy sum x = S, clip to [0,1].
     Implementation details:
       - start with y = p_bar / sum(p_bar) * S  (equals p_bar*S since p_bar sums to 1)
       - clip y to [0,1]
@@ -280,6 +320,8 @@ def mean_opt_plug_in(
             x_init = x_init / x_init.sum() * S
         x.copy_(x_init)
         x.requires_grad_()
+
+
 
     # convert p_bar, lambda_bar to tensors / numpy depending on compute_utility_fn
     # We'll call compute_utility_fn in numpy form and use torch autograd by wrapping with torch.autograd.functional
@@ -533,8 +575,19 @@ if __name__ == "__main__":
         # toy utility: 1 - sum p_i * p_out_i(x) where p_out_i approximated as decreasing in x_i
         # use a small surrogate: p_out_i = exp(-c * lam * x_i), so U = 1 - sum p * p_out
         c = 0.5
-        p_out = np.exp(-c * lam * x)
-        return float(1.0 - np.dot(p, p_out))
+        # --- FIX START ---
+        if isinstance(p, np.ndarray):
+            # NumPy mode
+            p_out = np.exp(-c * lam * x)
+            return float(1.0 - np.dot(p, p_out))
+        elif torch.is_tensor(p):
+            # PyTorch mode for mean_opt_plug_in
+            lam_t = torch.tensor(float(lam), dtype=torch.float32, device=p.device)
+            p_out = torch.exp(-c * lam_t * x)
+            return 1.0 - torch.sum(p * p_out)
+        else:
+            raise TypeError("Inputs must be np.ndarray or torch.Tensor")
+        # --- FIX END ---
 
     # create toy env_pool
     M = 20

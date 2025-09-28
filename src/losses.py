@@ -169,8 +169,11 @@ def p_succ_alpha4(
     # Compute log(P_succ)
     pref = (math.pi ** 1.5) * lam_i / torch.sqrt(b_t)
     exponent = torch.clamp((a ** 2) / (4.0 * b_t), max=50.0)
+    # print("exponent is : ",exponent)
     log_P_succ = torch.log(pref + eps) + exponent + torch.log(_Q_torch_safe(z, eps))
-
+    # print("log_P_succ is : ",log_P_succ)
+    log_P_succ = torch.clamp(log_P_succ, max=0.0) 
+    # P_succ = torch.exp(log_P_succ)
     # Final success probability
     P_succ = torch.exp(log_P_succ)
     return torch.clamp(P_succ, min=0.0, max=1.0)
