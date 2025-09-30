@@ -21,7 +21,6 @@ import torch.nn.functional as F
 # ----------------------------
 # Projection onto capped simplex
 # ----------------------------
-# the output is the same as my first code and I have done a test on it 
 def project_capped_simplex(y: torch.Tensor, S: float, tol: float = 1e-6, max_iter: int = 60) -> torch.Tensor:
     """
     Euclidean projection of y onto { x in [0,1]^M : sum_i x_i <= S }.
@@ -86,12 +85,6 @@ def project_capped_simplex(y: torch.Tensor, S: float, tol: float = 1e-6, max_ite
             greater = (s > S_t)
             theta_lo = torch.where(greater, theta, theta_lo)
             theta_hi = torch.where(greater, theta_hi, theta)
-
-            # optional early stop (kept purely in torch)
-            # NOTE: we avoid Python `if` on tensors; run full max_iter for purity
-            # converged = (theta_hi - theta_lo).abs() < tol
-            # theta_lo = torch.where(converged, theta_lo, theta_lo)
-            # theta_hi = torch.where(converged, theta_hi, theta_hi)
 
         theta = 0.5 * (theta_lo + theta_hi)
         x[idx] = torch.clamp(vec - theta, 0.0, 1.0)
@@ -169,11 +162,8 @@ def p_succ_alpha4(
     # Compute log(P_succ)
     pref = (math.pi ** 1.5) * lam_i / torch.sqrt(b_t)
     exponent = torch.clamp((a ** 2) / (4.0 * b_t), max=50.0)
-    # print("exponent is : ",exponent)
     log_P_succ = torch.log(pref + eps) + exponent + torch.log(_Q_torch_safe(z, eps))
-    # print("log_P_succ is : ",log_P_succ)
     log_P_succ = torch.clamp(log_P_succ, max=0.0) 
-    # P_succ = torch.exp(log_P_succ)
     # Final success probability
     P_succ = torch.exp(log_P_succ)
     return torch.clamp(P_succ, min=0.0, max=1.0)
@@ -220,7 +210,6 @@ def utility_from_env_samples(
     else:
         x_vec = x
 
-    # L, M = p_samples.shape
     device = p_samples.device
     dtype = p_samples.dtype
 
@@ -241,34 +230,10 @@ def utility_from_env_samples(
     U = torch.clamp(U, 0.0, 1.0)
     return U
 
-import torch
-import numpy as np
-
-M = 10
-p = np.random.dirichlet(np.ones(M))
-lam = 2.5
-x = np.random.rand(M)
-x = x / x.sum() * 10  # make sure sum(x) ≈ S
-
-# Convert to torch tensors
-p_torch = torch.tensor(p, dtype=torch.float32).unsqueeze(0)      # shape (1, M)
-lam_torch = torch.tensor([lam], dtype=torch.float32)             # shape (1,)
-x_torch = torch.tensor(x, dtype=torch.float32)                   # shape (M,)
-
-# Call the function
-u = utility_from_env_samples(p_torch, lam_torch, x_torch)
-print("Test utility:", u.item())
 
 # ----------------------------
 # Smoothed CVaR loss (minimize)
 # ----------------------------
-def softplus_scaled(z: torch.Tensor, tau: float) -> torch.Tensor:
-    """
-    s_tau(z) = (1/tau) * log(1 + exp(tau * z))
-    (softplus scaled so that s_tau(z) approximates (z)_+ for large tau).
-    """
-    return (1.0 / tau) * F.softplus(tau * z)
-
 def _sigma_tau(z: torch.Tensor, tau: float) -> torch.Tensor:
     """
     derivative of s_tau(z) wrt z: sigma_tau(z) = exp(tau z)/(1 + exp(tau z)) = sigmoid(tau z)
@@ -285,11 +250,6 @@ def solve_t_star_bisection(
     """
     Solve for t* that satisfies: 1 = (1/(gamma L)) * sum_{s} sigma_tau(ell_s - t)
     using bisection. Input ell is shape (L,) or (B, L) for batch; returns t_star (scalar or (B,)).
-
-    We solve for t by locating t_low and t_high s.t. derivative sign differs.
-
-    Notes:
-     - sigma_tau in (0,1), the RHS in range (0, 1/gamma). For gamma < 1 the equation has solution.
     """
     single = (ell.dim() == 1)
     if single:
@@ -322,7 +282,6 @@ def solve_t_star_bisection(
     f_hi = f_val(t_hi)
 
     # Adjust if endpoints do not bracket zero: expand interval
-    # If f_lo < 0 and f_hi < 0 or both >0, adjust heuristically
     expand_iter = 0
     while torch.all((f_lo * f_hi) > 0) and (expand_iter < 10):
         # expand both sides
@@ -336,9 +295,7 @@ def solve_t_star_bisection(
     for _ in range(max_iter):
         t_mid = 0.5 * (t_lo + t_hi)
         f_mid = f_val(t_mid)
-        # where f_mid > 0, root lies to the right (we want f=0), so move lo up
-        # but careful with sign: f = 1 - RHS. If f_mid > 0 => RHS < 1 => need to increase RHS => decrease t (since sigma(ell - t) increases when t decreases)
-        # We'll instead use monotonic properties numerically by checking f_lo * f_mid <= 0
+        # We'll use monotonic properties numerically by checking f_lo * f_mid <= 0
         cond = (f_lo * f_mid <= 0)
         # update intervals per element
         t_hi = torch.where(cond, t_mid, t_hi)
@@ -365,25 +322,6 @@ def smoothed_cvar_loss_from_utilities(
     Compute smoothed CVaR of the *loss* ell = 1 - U for each minibatch element,
     solve inner t* per minibatch element (vectorized bisection), and return
     the mean CVaR value (scalar) and per-sample CVaR (shape B,).
-
-    Minimization objective: CVaR_gamma[ell]. Use tau for smoothness.
-
-    Args
-    ----
-    U_batch : torch.Tensor shape (B, L) or (L,)
-        Per-sample utilities under L posterior draws (for each minibatch element).
-    gamma : float in (0,1)
-        tail probability
-    tau : float > 0
-        smoothing parameter (larger => closer to hinge)
-    minimize : True (semantic)
-    per_sample : if True return per-B CVaR array
-    tol, max_iter : inner solver params
-
-    Returns
-    -------
-    loss_mean : torch.Tensor scalar (mean CVaR over batch)
-    cvar_per_sample : torch.Tensor shape (B,) CVaR per batch element
     """
     single = (U_batch.dim() == 1)
     if single:
@@ -398,40 +336,16 @@ def smoothed_cvar_loss_from_utilities(
     # solve t* per row
     t_star = solve_t_star_bisection(ell, gamma=gamma, tau=tau, tol=tol, max_iter=max_iter)  # shape (B,)
 
-    # compute Phi(t_star) = t + (1/(gamma L)) sum s_tau(ell - t)
+    # CRITICAL FIX: Use F.softplus(z, beta=tau) which correctly implements
+    # (1/tau) * log(1 + exp(tau * z)).
     t_star_col = t_star.view(-1, 1)
-    s_vals = softplus_scaled(ell - t_star_col, tau)  # (B, L)
+    s_vals = F.softplus(ell - t_star_col, beta=tau)  # (B, L)
+    
+    # compute Phi(t_star) = t + (1/(gamma L)) sum s_tau(ell - t)
     Phi = t_star + (1.0 / (gamma * float(L))) * s_vals.sum(dim=1)  # shape (B,)
 
     loss_mean = Phi.mean()
     return (loss_mean, Phi.squeeze(0)) if per_sample else (loss_mean, None)
 
-# ----------------------------
-# Small smoke test
-# ----------------------------
 if __name__ == "__main__":
-    # quick run
-    torch.manual_seed(0)
-    M = 10
-    L = 50
-    # example posterior samples
-    P_pool = torch.rand(L, M)
-    P_pool = P_pool / P_pool.sum(dim=1, keepdim=True)
-    lam_pool = torch.rand(L) * 5.0 + 0.5
-
-    # random x (unprojected)
-    y = torch.randn(M)
-    S = 3.0
-    x_proj = project_capped_simplex(y, S)
-    print("Projected x (sum):", x_proj.sum().item())
-
-    # compute utilities for x_proj
-    T_bits = 1.0
-    theta = 2 ** T_bits - 1.0
-    U = utility_from_env_samples(P_pool, lam_pool, x_proj, theta)
-    print("Utilities shape:", U.shape, "mean:", U.mean().item())
-
-    # CVaR loss
-    U_batch = U.unsqueeze(0)  # one minibatch element
-    loss, _ = smoothed_cvar_loss_from_utilities(U_batch, gamma=0.05, tau=10.0)
-    print("CVaR loss (smoothed):", loss.item())
+    pass
