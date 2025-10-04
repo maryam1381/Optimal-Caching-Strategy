@@ -22,6 +22,7 @@ import math
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
+import torch.optim as optim
 
 # Recommended external helpers / project functions (import or pass-in)
 # from src.env_pool import build_env_pool
@@ -294,96 +295,72 @@ def mean_opt_plug_in(
 ) -> np.ndarray:
     """
     Compute plug-in mean-opt policy by maximizing expected utility under posterior mean parameters (p_bar, lambda_bar).
-    We use projected gradient ascent implemented with PyTorch autograd: treat x as a torch tensor variable, take gradient of U(x;mean_env)
-    and step along gradient, projecting into {x in [0,1]^M: sum x <= S} after each update.
-
-    Args:
-      p_bar: posterior mean popularity (numpy)
-      lambda_bar: posterior mean lambda (float)
-      S: capacity
-      compute_utility_fn: callable accepting numpy objects OR we will provide a torch wrapper below
-      project_fn: projection function that accepts a torch tensor (M,) and S and returns projected torch tensor (M,)
-      M: number of files
-      lr, steps: optimization hyperparameters
-
-    Returns:
-      x_opt numpy array shape (M,)
+    We use projected gradient ascent implemented with PyTorch autograd.
     """
+    # **BUG FIX**: Handle the zero-capacity edge case
+    if S <= 1e-9:
+        return np.zeros(M, dtype=np.float32)
+
     device_t = torch.device(device)
-    # create torch variables
-    x = torch.randn(M, dtype=torch.float32, device=device_t, requires_grad=True)  # start from random
-    # initialize x to p_bar scaled to S
-    with torch.no_grad():
-        x_init = torch.from_numpy((p_bar * S).astype(np.float32)).to(device_t)
-        x_init = torch.clamp(x_init, 0.0, 1.0)
-        if x_init.sum() > S:
-            x_init = x_init / x_init.sum() * S
-        x.copy_(x_init)
-        x.requires_grad_()
+    
+    # Initialize x as a parameter for the optimizer
+    x = torch.full((M,), float(S) / M, dtype=torch.float32, device=device_t, requires_grad=True)
+    
+    # Use a standard PyTorch optimizer
+    optimizer = optim.Adam([x], lr=lr)
 
+    p_t = torch.from_numpy(p_bar.astype(np.float32)).to(device_t)
+    lam_t = torch.tensor(float(lambda_bar), dtype=torch.float32, device=device_t)
 
-
-    # convert p_bar, lambda_bar to tensors / numpy depending on compute_utility_fn
-    # We'll call compute_utility_fn in numpy form and use torch autograd by wrapping with torch.autograd.functional
-    # Simpler: write a small torch wrapper that computes utility using PyTorch operations if user supplied compute_utility_fn is numpy-based.
-    # We'll assume compute_utility_fn can accept torch tensors and return torch scalar — if not, we create a fallback numeric gradient.
-
-    def utility_torch(x_t: torch.Tensor) -> torch.Tensor:
-        """
-        Attempt to compute utility using compute_utility_fn:
-         * If compute_utility_fn accepts torch tensors and uses torch ops, this will work and allow autodiff.
-         * Otherwise, we fallback to numeric gradient approach (handled below).
-        """
-        try:
-            # hope compute_utility_fn handles torch
-            p_t = torch.from_numpy(p_bar.astype(np.float32)).to(device_t)
-            lam_t = torch.tensor(float(lambda_bar), dtype=torch.float32, device=device_t)
-            u_t = compute_utility_fn(p_t, lam_t, x_t)  # expects torch-mode fn
-            if not torch.is_tensor(u_t):
-                raise RuntimeError("compute_utility_fn returned non-torch type")
-            return u_t
-        except Exception:
-            # fallback: call numpy compute_utility_fn and wrap with torch.from_numpy
-            x_np = x_t.detach().cpu().numpy()
-            u_np = compute_utility_fn(p_bar, float(lambda_bar), x_np)
-            return torch.tensor(float(u_np), device=device_t)
-
-    # optimizer-like loop (manual steps)
     for it in range(steps):
-        # zero grad
-        if x.grad is not None:
-            x.grad.detach_()
-            x.grad.zero_()
-        # compute objective (maximize)
-        u = utility_torch(x)
-        # we maximize u -> minimize -u
-        loss = -u
+        optimizer.zero_grad()
+        
+        # Project x to ensure it's a valid policy for the utility calculation
+        x_proj = project_fn(x, S)
+        
+        # We want to maximize utility, so we minimize its negative
+        loss = -compute_utility_fn(p_t, lam_t, x_proj)
+        
         loss.backward()
-        with torch.no_grad():
-            grad = x.grad
-            if grad is None:
-                # numeric fallback (finite diff)
-                eps = 1e-6
-                grad = torch.zeros_like(x)
-                for i in range(M):
-                    xp = x.detach().clone()
-                    xm = x.detach().clone()
-                    xp[i] += eps
-                    xm[i] -= eps
-                    up = float(utility_torch(xp))
-                    um = float(utility_torch(xm))
-                    grad[i] = (up - um) / (2 * eps)
-            # gradient ascent step
-            x += lr * grad
-            # projection
-            x_proj = project_fn(x, S)
-            x.copy_(x_proj)
-        if verbose and (it % 100 == 0):
-            print(f"[mean_opt] iter {it}/{steps}, utility={float(u):.6f}")
+        optimizer.step()
 
-    x_opt = x.detach().cpu().numpy()
+        # After the optimizer step, project x back into the feasible set
+        with torch.no_grad():
+            x.data = project_fn(x.data, S)
+
+        if verbose and (it % 100 == 0):
+            print(f"[mean_opt] iter {it}/{steps}, utility={-loss.item():.6f}")
+
+    # Return the final optimized and projected policy
+    x_opt = project_fn(x, S).detach().cpu().numpy()
     return x_opt
 
+def plugin_mean_policy(q: np.ndarray, env_pool: Tuple[np.ndarray, np.ndarray], compute_utility_fn: Callable, S: float, project_fn: Callable, M: int, rng: np.random.Generator, device: str) -> np.ndarray:
+    """
+    Policy function for the Plug-in Mean Optimal Baseline.
+    NOTE: In a real system, the posterior means (p_bar, lambda_bar) would be
+    calculated based on the measurement q. For a simple baseline, we use the
+    *global* posterior mean from the entire env_pool as a plug-in estimate for all q.
+    """
+    # Calculate global means (p_bar, lambda_bar) from the whole pool for simplicity
+    p_pool, lam_pool = env_pool
+    p_bar_global = p_pool.mean(axis=0)
+    lambda_bar_global = lam_pool.mean()
+
+    # Find the optimal policy for this plug-in estimate
+    x_opt = mean_opt_plug_in(
+        p_bar=p_bar_global,
+        lambda_bar=float(lambda_bar_global),
+        S=S,
+        compute_utility_fn=compute_utility_fn,
+        project_fn=project_fn,
+        M=M,
+        lr=5e-3, # Use fixed LR for this optimization
+        steps=600,
+        device=device,
+        verbose=False
+    )
+    return x_opt
 
 # -----------------------------------------------------------------------------
 # Plotting helpers

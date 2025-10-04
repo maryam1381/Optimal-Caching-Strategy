@@ -156,7 +156,7 @@ def main(config: Dict[str, Any]):
         config=train_config, 
         rng=rng,
         val_dataset_q=val_dataset_q, 
-        # eval_fn=evaluate_model
+        eval_fn=evaluate_model
     )
     print("[main] Training finished. Check the save directory for outputs.")
 
@@ -263,6 +263,8 @@ if __name__ == "__main__":
     })
     try:
         run_full_sweep(cfg)
+        # generate_plots(results_root="results")
+        # main(cfg)
     except Exception as e:
         print("Raise error :", e)
         # main(cfg)

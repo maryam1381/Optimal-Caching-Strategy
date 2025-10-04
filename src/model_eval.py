@@ -5,137 +5,26 @@ import torch
 import torch.nn as nn
 from typing import Callable, Iterable, List, Optional, Sequence, Tuple, Dict, Union
 
-from src.baseline import empirical_cvar, mean_opt_plug_in, popularity_deterministic_topS
+from src.losses import project_capped_simplex
 
-# def evaluate_policy_on_env_pool(
-#     x: np.ndarray,
-#     env_pool_list: Sequence[Tuple[np.ndarray, float]],
-#     compute_utility_fn: Callable,
-#     n_sample: int,
-#     rng: np.random.Generator,
-#     device: torch.device = torch.device("cpu")
-# ) -> np.ndarray:
-#     """
-#     Evaluates a fixed policy vector x against a large set of scenario draws
-#     from the env_pool. This is used by the baseline comparison demo.
+# --- Tail metrics for loss right-tail (alpha=0.95) ---
+def loss_tail_metrics(losses: np.ndarray, alpha: float = 0.95) -> dict:
+    """
+    Compute right-tail risk metrics for losses at confidence alpha:
+      VaR_loss_alpha: alpha-quantile of loss (e.g., 95th percentile)
+      CVaR_loss_alpha: mean of the worst (1 - alpha) fraction of losses
+    """
+    L = np.asarray(losses, dtype=float)
+    var = float(np.quantile(L, alpha))
+    tail = L[L >= var]
+    cvar = float(tail.mean()) if tail.size > 0 else var
+    # Monotonicity: CVaR should be >= VaR for losses
+    assert cvar >= var - 1e-12
+    return {
+        f"VaR_loss_{alpha:.2f}": var,
+        f"CVaR_loss_{alpha:.2f}": cvar,
+    }
 
-#     Args:
-#         x (np.ndarray): The fixed policy vector (M,).
-#         env_pool_list (list): A list of environmental scenarios [(p_s, lam_s), ...].
-#         compute_utility_fn (function): Utility function.
-#         n_sample (int): The number of scenario draws to use for evaluation.
-#         rng (np.random.Generator): NumPy random number generator.
-#         device (torch.device): The device to run the computation on.
-
-#     Returns:
-#         np.ndarray: Array of realized utility scores (shape n_sample,).
-#     """
-#     pool_size = len(env_pool_list)
-    
-#     # Convert fixed policy x to torch tensor
-#     x_t = torch.from_numpy(x).float().to(device)
-
-#     # Sample n_sample scenarios
-#     inds = rng.integers(0, pool_size, size=n_sample)
-
-#     u_vals = []
-#     with torch.no_grad():
-#         for s in inds:
-#             p_s, lam_s = env_pool_list[int(s)]
-#             p_t = torch.from_numpy(np.asarray(p_s, dtype=np.float32)).to(device)
-#             lam_t = torch.tensor(float(lam_s), dtype=torch.float32, device=device)
-#             # compute_utility_fn should handle scalar p_t, lam_t and M-dim x_t
-#             u = compute_utility_fn(p_t, lam_t, x_t) 
-#             u_vals.append(u.item())
-
-#     return np.array(u_vals)
-
-# def evaluate_model(model: Union[nn.Module, Callable], val_dataset_q: np.ndarray, 
-#                    env_pool_list: Sequence[Tuple[np.ndarray, float]], project_fn: Callable, 
-#                    compute_utility_fn: Callable, S: float,
-#                    gamma: float = 0.05, device: str = "cpu", 
-#                    n_env_eval: int = 1000, rng: Optional[np.random.Generator] = None):
-#     """
-#     Evaluates a trained model (e.g., RL2O-CVaR) and compares it against two baselines:
-#     1. Plug-in mean-optimization.
-#     2. Popularity-based Top-S caching.
-    
-#     Returns a single dictionary with metrics for all three policies.
-#     """
-#     if rng is None: rng = np.random.default_rng()
-#     device_t = torch.device(device)
-
-#     # --- Helper to compute metrics from utility samples ---
-#     def get_metrics_from_utilities(u_arr: np.ndarray) -> Dict[str, float]:
-#         loss_arr = 1.0 - u_arr
-#         metrics = {
-#             'mean_utility_mean': float(u_arr.mean()),
-#             'mean_utility_std': float(u_arr.std()),
-#             'mean_loss_mean': float(loss_arr.mean()),
-#             f'VaR_{gamma}': float(np.quantile(loss_arr, 1.0 - gamma)), # VaR is a quantile on loss
-#             f'CVaR_{gamma}': empirical_cvar(loss_arr, gamma, on_loss=True)
-#         }
-#         return metrics
-
-#     # --- 1. Evaluate the primary model (RL2O-CVaR) ---
-#     is_model_module = isinstance(model, nn.Module)
-#     if is_model_module:
-#         model.to(device_t)
-#         model.eval()
-
-#     # The model's policy depends on `q`, so we evaluate it for each `q` and average
-#     rlo_results = []
-#     for q_np in val_dataset_q:
-#         if is_model_module:
-#             with torch.no_grad():
-#                 q_t = torch.from_numpy(q_np.astype(np.float32)).to(device_t).unsqueeze(0)
-#                 y = model(q_t).squeeze(0)
-#                 x = project_fn(y, S)
-#                 x_np = x.cpu().numpy()
-#         else:
-#             # Handle cases where `model` is a callable policy function
-#             x_np = model(q_np)
-        
-#         # Evaluate this specific policy x_np on the environment pool
-#         u_samples = evaluate_policy_on_env_pool(
-#             x_np, env_pool_list, compute_utility_fn, n_sample=n_env_eval, rng=rng
-#         )
-#         rlo_results.append(get_metrics_from_utilities(u_samples))
-    
-#     # Aggregate metrics across the validation dataset for the main model
-#     df_rlo = pd.DataFrame(rlo_results)
-#     metrics_rlo = {col: df_rlo[col].mean() for col in df_rlo.columns}
-
-
-#     # --- 2. Prepare for Baselines: Compute Global Posterior Mean ---
-#     print("Preparing and evaluating baseline policies...")
-#     p_stack = np.stack([p for p, lam in env_pool_list], axis=0)
-#     lambda_vec = np.array([lam for p, lam in env_pool_list])
-#     p_bar_global = p_stack.mean(axis=0)
-#     lambda_bar_global = float(lambda_vec.mean())
-#     M = p_bar_global.shape[0]
-
-#     # --- 3. Evaluate Popularity Heuristic (Top-S) ---
-#     x_pop = popularity_deterministic_topS(p_bar_global, S=S)
-#     u_samples_pop = evaluate_policy_on_env_pool(x_pop, env_pool_list, compute_utility_fn, n_sample=n_env_eval, rng=rng)
-#     metrics_pop = get_metrics_from_utilities(u_samples_pop)
-
-#     # --- 4. Evaluate Plug-in Mean-Opt ---
-#     x_mean_opt = mean_opt_plug_in(
-#         p_bar=p_bar_global, lambda_bar=lambda_bar_global, S=S,
-#         compute_utility_fn=compute_utility_fn, project_fn=project_fn, M=M,
-#         device=str(device), verbose=False
-#     )
-#     u_samples_mean_opt = evaluate_policy_on_env_pool(x_mean_opt, env_pool_list, compute_utility_fn, n_sample=n_env_eval, rng=rng)
-#     metrics_mean_opt = get_metrics_from_utilities(u_samples_mean_opt)
-
-#     # --- 5. Combine all metrics into a single dictionary ---
-#     final_metrics = {}
-#     for key, val in metrics_rlo.items(): final_metrics[f"RLO_{key}"] = val
-#     for key, val in metrics_mean_opt.items(): final_metrics[f"MEANOPT_{key}"] = val
-#     for key, val in metrics_pop.items(): final_metrics[f"POP_{key}"] = val
-
-#     return final_metrics
 
 
 def evaluate_model(model, val_dataset_q, env_pool_list, project_fn, compute_utility_fn, S,
@@ -341,7 +230,7 @@ if __name__ == '__main__':
             model=mock_model,
             val_dataset_q=mock_val_dataset,
             env_pool_list=mock_env_pool,
-            project_fn=mock_project_fn,
+            project_fn=project_capped_simplex,
             compute_utility_fn=mock_compute_utility_fn,
             S=mock_S,
             gamma=mock_gamma,
@@ -375,7 +264,7 @@ if __name__ == '__main__':
             policies_to_evaluate=policies_to_eval,
             val_dataset_q=mock_val_dataset,
             env_pool_list=mock_env_pool,
-            project_fn=mock_project_fn, # <--- PASSING project_fn HERE
+            project_fn=project_capped_simplex, # <--- PASSING project_fn HERE
             compute_utility_fn=mock_compute_utility_fn,
             S=mock_S,
             gamma=mock_gamma,
