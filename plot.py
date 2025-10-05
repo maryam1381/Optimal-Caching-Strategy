@@ -134,15 +134,7 @@ def plot_cvar_vs_w(results_folder):
     """
     Draw the plot of CVaR vs Measurement Budget (W) for different methods.
     :param results_folder: Path to the folder where results of the experiments are saved.
-    """
-    # Define the experiments and their respective labels
-    experiments = [
-        {"label": "Gamma_r", "folders": ["exp1_gamma_r=0.6", "exp1_gamma_r=1.0", "exp1_gamma_r=1.5", "exp1_gamma_r=2.0"], "gamma": None},
-        {"label": "Lambda", "folders": ["exp2_lambda_true=0.5", "exp2_lambda_true=1.5", "exp2_lambda_true=5.0"], "gamma": None},
-        {"label": "W (Measurement Budget)", "folders": ["exp3_W=100", "exp3_W=20", "exp3_W=500"], "gamma": None},
-        {"label": "L (Sample Size)", "folders": ["exp4_L=128", "exp4_L=256", "exp4_L=64"], "gamma": None},
-    ]
-    
+    """    
     # Store data for the CVaR vs W plot
     cvar_vs_w_data = []
 
@@ -152,15 +144,13 @@ def plot_cvar_vs_w(results_folder):
             file_paths = [os.path.join(folder_path, f) for f in os.listdir(folder_path) if f.startswith('TRAIN')]
             
             for file_path in file_paths:
-                # Read the CSV file
                 df = pd.read_csv(file_path)
                 
-                # Extract loss and W values
                 loss = df['loss_train_mean']
                 
                 # For "exp3_W" folder, extract the W value from the folder name
                 if "exp3_W" in folder:
-                    W_value = int(folder.split('=')[-1])  # Extract W value from folder name
+                    W_value = int(folder.split('=')[-1])  
                     
                     # Compute CVaR for the losses (assuming gamma=0.05 for CVaR)
                     cvar = compute_cvar(loss, 0.05)
@@ -192,15 +182,7 @@ def plot_loss_distribution_sorted(results_folder):
     Save each plot separately with unique filenames.
     
     :param results_folder: Path to the folder where results of the experiments are saved.
-    """
-    # Define the experiments and their respective labels
-    experiments = [
-        {"label": "Gamma_r", "folders": ["exp1_gamma_r=0.6", "exp1_gamma_r=1.0", "exp1_gamma_r=1.5", "exp1_gamma_r=2.0"]},
-        {"label": "Lambda", "folders": ["exp2_lambda_true=0.5", "exp2_lambda_true=1.5", "exp2_lambda_true=5.0"]},
-        {"label": "W (Measurement Budget)", "folders": ["exp3_W=100", "exp3_W=20", "exp3_W=500"]},
-        {"label": "L (Sample Size)", "folders": ["exp4_L=128", "exp4_L=256", "exp4_L=64"]},
-    ]
-    
+    """    
     # Ensure the "figures" folder exists
     if not os.path.exists("figures"):
         os.makedirs("figures")
@@ -243,7 +225,7 @@ def plot_loss_distribution_sorted(results_folder):
         
         # Plot the Boxplots / Violin of Loss Distribution
         plt.figure(figsize=(8, 6))
-        sns.boxplot(x='method', y='loss', data=loss_distribution_df, palette="Set2")
+        sns.boxplot(x='method', y='loss', data=loss_distribution_df, hue='method', palette="Set2", legend=False)
         plt.title(f"Boxplots / Violin of Loss Distribution for {experiment['label']}")
         plt.xlabel("Method")
         plt.ylabel("Loss")
@@ -262,12 +244,24 @@ def compute_zipf_exponent(popularity_values):
     :param popularity_values: List or array of popularity values.
     :return: Estimated Zipf exponent.
     """
+    # Ensure popularity_values are numeric (convert if necessary)
+    popularity_values = np.array(popularity_values, dtype=np.float64)
+    
+    # Remove any non-positive values, since log(0) is undefined and log of negative numbers is complex
+    popularity_values = popularity_values[popularity_values > 0]
+    
+    # Check if there are enough values to calculate
+    if len(popularity_values) < 2:
+        raise ValueError("Not enough positive popularity values to compute Zipf exponent.")
+    
     ranks = np.arange(1, len(popularity_values) + 1)
     log_ranks = np.log(ranks)
     log_popularity = np.log(popularity_values)
+    
     # Fit a line to log(ranks) vs log(popularity)
     slope, intercept = np.polyfit(log_ranks, log_popularity, 1)
     return -slope  # The exponent is the negative slope
+
 
 def plot_performance_vs_zipf(results_folder, gamma_values=[0.6, 1.0, 1.5, 2.0]): # heat map 
     """
@@ -336,7 +330,7 @@ def plot_performance_vs_zipf(results_folder, gamma_values=[0.6, 1.0, 1.5, 2.0]):
     
     # Save the Mean Utility heatmap
     plt.savefig("figures/6_Performance_vs_Zipf_Utility.png")
-    plt.close()  # Close the plot after saving
+    plt.close() 
 
     print("CVaR and Mean Utility vs Zipf Exponent heatmaps have been saved in the 'figures' folder.")
 
@@ -458,13 +452,15 @@ def plot_training_curves(results_folder='results', smoothing_window=10):
 
     print("All training curve plots have been saved in the 'figures' folder.")
 
-plot_training_curves()
-# def generate_plots():
-    # Utility_CDFs('results')
-    # Mean_vs_CVaR_tradeoff_scatter('results')
-#     CVaR_Va_vs_measurement_budget_W()
 
-# plot_cvar_vs_w('results')
-# plot_loss_distribution_sorted('results')
-# plot_performance_vs_zipf('results')
-# plot_cvar_vs_l('results')
+def generate_plots():
+    Utility_CDFs('results')
+    Mean_vs_CVaR_tradeoff_scatter('results')
+    plot_cvar_vs_w('results')
+    plot_loss_distribution_sorted('results')
+    plot_performance_vs_zipf('results')
+    plot_cvar_vs_l('results')
+    plot_training_curves()
+
+
+generate_plots()

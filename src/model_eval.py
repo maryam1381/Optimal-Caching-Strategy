@@ -1,4 +1,5 @@
 import math
+import time
 import numpy as np
 import pandas as pd
 import torch
@@ -27,37 +28,40 @@ def loss_tail_metrics(losses: np.ndarray, alpha: float = 0.95) -> dict:
 
 
 
-def evaluate_model(model, val_dataset_q, env_pool_list, project_fn, compute_utility_fn, S,
-                   gamma=0.05, device=torch.device("cpu"), n_env_eval=200, rng=np.random.default_rng()):
+def evaluate_model(
+    model: nn.Module,
+    val_dataset_q: np.ndarray,
+    env_pool_list: Sequence[Tuple[np.ndarray, float]],
+    project_fn: Callable,
+    compute_utility_fn: Callable,
+    S: float,
+    gamma: float,
+    device: torch.device,
+    rng: np.random.Generator,
+    n_env_eval: int = 500
+) -> Dict[str, float]:
     """
-    Evaluates the trained model (RL2O-CVaR) on the validation set.
+    Evaluates the model, returns performance metrics and inference times.
+    Now, inference times are added directly to the metrics dictionary.
     """
-    # Check if a model (PyTorch Module) is provided or if the input is a function
-    is_model_module = isinstance(model, nn.Module)
-    if is_model_module:
-        model = model.to(device)
-        model.eval()
-
-    results = []
+    policy_results = []
+    inference_times = []
     pool_size = len(env_pool_list)
-    for q_np in val_dataset_q:
-        x = None
-        if is_model_module:
-            with torch.no_grad():
-                q_t = torch.from_numpy(q_np).float().to(device).unsqueeze(0)
-                y = model(q_t).squeeze(0)
-                x = project_fn(y, S)
-                x_np = x.cpu().numpy()
-        else:
-            # If a function is passed instead of a model (e.g., a lambda for a policy)
-            # the policy function must return the projected policy x (numpy array)
-            x_np = model(q_np) 
-            x = torch.from_numpy(x_np).float().to(device)
+    model.eval()
 
-        # Draw n_env_eval scenarios from the environment pool
-        inds = rng.integers(0, pool_size, size=n_env_eval)
-        u_vals = []
-        with torch.no_grad():
+    with torch.no_grad():
+        for q_np in val_dataset_q:
+            q = torch.from_numpy(q_np).float().to(device)
+            
+            # Measure inference time
+            start_time = time.perf_counter()
+            x_raw = model(q.unsqueeze(0)).squeeze(0)
+            x = project_fn(x_raw.unsqueeze(0), S).squeeze(0)
+            end_time = time.perf_counter()
+            inference_times.append(end_time - start_time)
+
+            inds = rng.integers(0, pool_size, size=n_env_eval)
+            u_vals = []
             for s in inds:
                 p_s, lam_s = env_pool_list[int(s)]
                 p_t = torch.from_numpy(np.asarray(p_s, dtype=np.float32)).to(device)
@@ -65,40 +69,30 @@ def evaluate_model(model, val_dataset_q, env_pool_list, project_fn, compute_util
                 u = compute_utility_fn(p_t, lam_t, x)
                 u_vals.append(u.item())
 
-        u_arr = np.array(u_vals)
-        mean_u = float(u_arr.mean())
-        
-        # VaR/CVaR calculations on loss
-        per_sample_loss = 1 - u_arr
-        mean_loss = float(per_sample_loss.mean())
+            u_arr = np.array(u_vals)
+            per_sample_loss = 1 - u_arr
+            var_gamma = np.quantile(per_sample_loss, gamma)
+            cvar_gamma = np.mean(per_sample_loss[per_sample_loss >= var_gamma])
+            policy_results.append((u_arr.mean(), per_sample_loss.mean(), var_gamma, cvar_gamma))
 
-        # VaR on loss: empirical gamma-quantile
-        var_gamma = np.quantile(per_sample_loss, gamma)
-
-        # CVaR on loss: mean of the worst gamma fraction of losses.
-        sorted_losses = np.sort(per_sample_loss)
-        k = max(1, int(np.ceil(gamma * len(sorted_losses))))
-        cvar_gamma = np.mean(sorted_losses[-k:])
-
-        results.append((mean_u, mean_loss, var_gamma, cvar_gamma))
-
-    # Aggregate across validation set
-    arr = np.array(results)
+    arr = np.array(policy_results)
     metrics = {
-        'mean_utility_mean': float(arr[:, 0].mean()),
-        'mean_utility_std': float(arr[:, 0].std()),
-        'mean_loss_mean': float(arr[:, 1].mean()),
-        f'VaR_{gamma}': float(arr[:, 2].mean()),
-        f'CVaR_{gamma}': float(arr[:, 3].mean()),
+        'mean_utility_mean': arr[:, 0].mean(),
+        'mean_utility_std': arr[:, 0].std(),
+        'mean_loss_mean': arr[:, 1].mean(),
+        f'VaR_{gamma}': arr[:, 2].mean(),
+        f'CVaR_{gamma}': arr[:, 3].mean(),
+        'inference_time_median': np.median(inference_times),
+        'inference_time_95_percentile': np.percentile(inference_times, 95),
     }
+    
     return metrics
-
 
 def evaluate_all_policies(
     policies_to_evaluate: Dict[str, Callable],
     val_dataset_q: np.ndarray,
     env_pool_list: Sequence[Tuple[np.ndarray, float]],
-    project_fn: Callable, # Added project_fn here
+    project_fn: Callable,
     compute_utility_fn: Callable,
     S: float,
     gamma: float,
@@ -107,30 +101,21 @@ def evaluate_all_policies(
     n_env_eval: int = 500
 ) -> Dict[str, Dict[str, float]]:
     """
-    Runs a comprehensive evaluation of multiple policies (trained model and baselines)
-    on the validation set and returns a dictionary of metrics for each policy.
-
-    Args:
-        policies_to_evaluate (Dict[str, Callable]): Dictionary where keys are policy names
-            and values are the policy function (e.g., model or lambda function for baseline).
-        project_fn (Callable): The projection function needed by the trained model.
-        ... other evaluation parameters ...
-
-    Returns:
-        Dict[str, Dict[str, float]]: Nested dictionary of metrics per policy.
+    Runs a comprehensive evaluation of multiple policies, including timing,
+    and returns a dictionary of metrics for each.
     """
     final_metrics = {}
 
     for policy_name, policy_fn in policies_to_evaluate.items():
         print(f"  -> Evaluating policy: {policy_name}")
 
-        # If the policy is a PyTorch Module (your trained model), we use evaluate_model directly.
         if isinstance(policy_fn, nn.Module):
+            # Evaluate the model (inference time and performance metrics)
             metrics = evaluate_model(
                 model=policy_fn,
                 val_dataset_q=val_dataset_q,
                 env_pool_list=env_pool_list,
-                project_fn=project_fn, # Pass the project_fn from evaluate_all_policies's parameters
+                project_fn=project_fn,
                 compute_utility_fn=compute_utility_fn,
                 S=S,
                 gamma=gamma,
@@ -138,18 +123,20 @@ def evaluate_all_policies(
                 n_env_eval=n_env_eval,
                 rng=rng
             )
-        
-        # If the policy is a function (e.g., a lambda for a baseline), we run the evaluation loop manually
         else:
             policy_results = []
             pool_size = len(env_pool_list)
-            
+            inference_times = []
+
             for q_np in val_dataset_q:
-                # Get policy x (numpy array) from the policy function
-                x_np = policy_fn(q_np) 
+                # Measure inference time
+                start_time = time.perf_counter()
+                x_np = policy_fn(q_np)
+                end_time = time.perf_counter()
+                inference_times.append(end_time - start_time)
+
                 x = torch.from_numpy(x_np).float().to(device)
 
-                # Draw n_env_eval scenarios from the environment pool
                 inds = rng.integers(0, pool_size, size=n_env_eval)
                 u_vals = []
                 with torch.no_grad():
@@ -161,32 +148,27 @@ def evaluate_all_policies(
                         u_vals.append(u.item())
 
                 u_arr = np.array(u_vals)
-                mean_u = float(u_arr.mean())
-                
-                # VaR/CVaR calculations on loss
                 per_sample_loss = 1 - u_arr
-                mean_loss = float(per_sample_loss.mean())
-
                 var_gamma = np.quantile(per_sample_loss, gamma)
-                sorted_losses = np.sort(per_sample_loss)
-                k = max(1, int(np.ceil(gamma * len(sorted_losses))))
-                cvar_gamma = np.mean(sorted_losses[-k:])
+                cvar_gamma = np.mean(per_sample_loss[per_sample_loss >= var_gamma])
+                
+                policy_results.append((u_arr.mean(), per_sample_loss.mean(), var_gamma, cvar_gamma))
 
-                policy_results.append((mean_u, mean_loss, var_gamma, cvar_gamma))
-
-            # Aggregate results for this policy
             arr = np.array(policy_results)
             metrics = {
-                'mean_utility_mean': float(arr[:, 0].mean()),
-                'mean_utility_std': float(arr[:, 0].std()),
-                'mean_loss_mean': float(arr[:, 1].mean()),
-                f'VaR_{gamma}': float(arr[:, 2].mean()),
-                f'CVaR_{gamma}': float(arr[:, 3].mean()),
+                'mean_utility_mean': arr[:, 0].mean(),
+                'mean_utility_std': arr[:, 0].std(),
+                'mean_loss_mean': arr[:, 1].mean(),
+                f'VaR_{gamma}': arr[:, 2].mean(),
+                f'CVaR_{gamma}': arr[:, 3].mean(),
+                'inference_time_median': np.median(inference_times),
+                'inference_time_95_percentile': np.percentile(inference_times, 95),
             }
 
         final_metrics[policy_name] = metrics
 
     return final_metrics
+
 
 if __name__ == '__main__':
     # --- Mock objects and functions for demonstration ---

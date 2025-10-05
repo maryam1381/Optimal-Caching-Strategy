@@ -311,7 +311,7 @@ def train_loop(
                     print(f"      {metric_name}: {value:.4f}")
 
             # For logging, we can log the metrics of the main model
-            main_model_metrics = all_metrics.get("RL2O-CVaR", {})
+            # main_model_metrics = all_metrics.get("RL2O-CVaR", {})
             log_row = {
                 'epoch': epoch,
                 'loss_train_mean': epoch_loss/max(1,num_batches),
@@ -319,6 +319,7 @@ def train_loop(
                 'tau': config.tau,
                 'S_cache': S,
             }
+            # print(flattened_metrics)
             log_row.update(flattened_metrics)
             append_log(training_log_path, log_row)
             

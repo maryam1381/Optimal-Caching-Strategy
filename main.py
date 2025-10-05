@@ -20,6 +20,7 @@ from typing import Dict, Any
 import numpy as np
 import torch
 
+from plot import generate_plots
 from src.model_eval import evaluate_model
 from src.losses import project_capped_simplex, utility_from_env_samples
 from src.train import TrainConfig
@@ -263,9 +264,7 @@ if __name__ == "__main__":
     })
     try:
         run_full_sweep(cfg)
-        # generate_plots(results_root="results")
-        # main(cfg)
+        generate_plots()
     except Exception as e:
         print("Raise error :", e)
-        # main(cfg)
     

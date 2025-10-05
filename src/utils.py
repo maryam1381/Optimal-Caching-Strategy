@@ -202,14 +202,34 @@ def append_row_csv(path: str, row: Dict[str, Any], header: Optional[List[str]] =
         row: dict mapping column name -> value
         header: optional explicit header order (list of column names). If None, use row.keys()
     """
-    ensure_dir(os.path.dirname(path) or ".")
-    file_exists = os.path.exists(path)
-    keys = header if header is not None else list(row.keys())
-    with open(path, "a", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=keys)
-        if not file_exists:
-            writer.writeheader()
-        writer.writerow({k: row.get(k, "") for k in keys})
+    try:
+        ensure_dir(os.path.dirname(path) or ".")
+        file_exists = os.path.exists(path)
+        keys = header if header is not None else list(row.keys())
+
+        # Open the CSV file in append mode
+        with open(path, "a", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=keys)
+            
+            # Write header only if the file does not exist
+            if not file_exists:
+                writer.writeheader()
+            
+            # Write the row
+            writer.writerow({k: row.get(k, "") for k in keys})
+
+    except Exception as e:
+        # Catch and print any exception that occurs during the file handling process
+        print(f"An error occurred while appending to CSV: {e}")
+        print("Row data that failed to append:", row)
+    # ensure_dir(os.path.dirname(path) or ".")
+    # file_exists = os.path.exists(path)
+    # keys = header if header is not None else list(row.keys())
+    # with open(path, "a", newline="") as f:
+    #     writer = csv.DictWriter(f, fieldnames=keys)
+    #     if not file_exists:
+    #         writer.writeheader()
+    #     writer.writerow({k: row.get(k, "") for k in keys})
 
 
 # ---------------------------------------------------------------------------
