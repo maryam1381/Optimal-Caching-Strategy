@@ -36,7 +36,7 @@ from src.model_eval import evaluate_all_policies
 from src.utils import to_torch, append_row_csv as append_log
 
 # Project utils assumed in losses.py
-from src.losses import smoothed_cvar_loss_from_utilities, project_capped_simplex
+from src.losses import smoothed_cvar_loss_from_utilities, project_capped_simplex, utility_from_env_samples
 # from src.model import create_mlp
 # from src.env_pool import build_env_pool
 # from src.eval import evaluate_policy_batch  # optional
@@ -89,7 +89,7 @@ def train_loop(
     config: TrainConfig,
     rng: np.random.Generator,
     val_dataset_q: Optional[np.ndarray] = None,
-    eval_fn=None,
+    # eval_fn=None,
 ) -> None:
     """
     Main training loop.
@@ -174,37 +174,47 @@ def train_loop(
 
             p_batch   = to_torch(p_batch_np,   device)  # (B, L, M)
             lam_batch = to_torch(lam_batch_np,   device)   # (B, L)
-            x_exp     = x[:, None, :]                              # (B, 1, M) for broadcast
+            # x_exp     = x[:, None, :]                              # (B, 1, M) for broadcast
 
             # (3) Compute utilities for all (B,L) scenarios
             # Preferred: compute_utility_fn supports vectorized inputs and returns (B,L)
-            U = None
-            try:
-                U = compute_utility_fn(p_batch, lam_batch, x_exp)  # expect (B, L)
-                if not (torch.is_tensor(U) and U.shape == (B, config.L)):
-                    U = None
-            except Exception:
-                U = None
+            # U = None
+            # try:
+            #     U = compute_utility_fn(p_batch, lam_batch, x_exp)  # expect (B, L)
+            #     if not (torch.is_tensor(U) and U.shape == (B, config.L)):
+            #         U = None
+            # except Exception:
+            #     U = None
 
-            if U is None:
-                # Fallback: loop over L or (B,L) with minimal Python overhead
-                U_list = []
-                for l in range(config.L):
-                    p_l   = p_batch[:, l, :]                 # (B, M)
-                    lam_l = lam_batch[:, l]                  # (B,)
-                    try:
-                        # allow a (B,M),(B,) path
-                        U_l = compute_utility_fn(p_l, lam_l, x)    # (B,)
-                        if not (torch.is_tensor(U_l) and U_l.shape == (B,)):
-                            raise RuntimeError
-                    except Exception:
-                        # final fallback: loop across B
-                        u_rows = []
-                        for b in range(B):
-                            u_rows.append(compute_utility_fn(p_l[b], lam_l[b], x[b]))
-                        U_l = torch.stack(u_rows, dim=0)
-                    U_list.append(U_l)
-                U = torch.stack(U_list, dim=1)               # (B, L)
+            # if U is None:
+            #     # Fallback: loop over L or (B,L) with minimal Python overhead
+            #     U_list = []
+            #     for l in range(config.L):
+            #         p_l   = p_batch[:, l, :]                 # (B, M)
+            #         lam_l = lam_batch[:, l]                  # (B,)
+            #         try:
+            #             # allow a (B,M),(B,) path
+            #             U_l = compute_utility_fn(p_l, lam_l, x)    # (B,)
+            #             if not (torch.is_tensor(U_l) and U_l.shape == (B,)):
+            #                 raise RuntimeError
+            #         except Exception:
+            #             # final fallback: loop across B
+            #             u_rows = []
+            #             for b in range(B):
+            #                 u_rows.append(compute_utility_fn(p_l[b], lam_l[b], x[b]))
+            #             U_l = torch.stack(u_rows, dim=0)
+            #         U_list.append(U_l)
+            #     U = torch.stack(U_list, dim=1)               # (B, L)
+
+            # (3) Compute utilities for all (B, L) scenarios (vectorized)
+            # Use x directly as (B, M) — no need for x_exp here
+            U = compute_utility_fn(
+                p_samples=p_batch,      # (B, L, M)
+                lam_samples=lam_batch,  # (B, L)
+                x=x,                    # (B, M)
+                theta=config.tau,       # or your theta param (if theta != tau, pass correct one)
+                # pass P_t, N0, mu, lambda_I_factor from config if you have them there
+            )
 
             # (4) Compute CVaR loss from utilities
             loss, _ = smoothed_cvar_loss_from_utilities(U, gamma=config.gamma_tail, tau=config.tau)
@@ -267,7 +277,7 @@ def train_loop(
                 p_bar=p_bar_global,
                 lambda_bar=lambda_bar_global,
                 S=S,
-                compute_utility_fn=compute_utility_fn,
+                compute_utility_fn=utility_from_env_samples,
                 project_fn=project_fn,
                 M=M,
                 device=device,
@@ -293,7 +303,7 @@ def train_loop(
                 val_dataset_q=val_dataset_q,
                 env_pool_list=list(zip(p_pool, lam_pool)),
                 project_fn=project_fn,
-                compute_utility_fn=compute_utility_fn,
+                compute_utility_fn=utility_from_env_samples,
                 S=S,
                 gamma=config.gamma_tail,
                 device=torch.device(device),

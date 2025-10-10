@@ -12,18 +12,16 @@ Usage (from repository root):
 from __future__ import annotations
 import argparse
 import json
-import os
+
 import sys
 from pathlib import Path
 from typing import Dict, Any
 
 import numpy as np
-import torch
 
 from plot import generate_plots
 from src.model_eval import evaluate_model
-from src.losses import project_capped_simplex, utility_from_env_samples
-from src.train import TrainConfig
+from src.losses import batch_utility_from_env_samples, project_capped_simplex
 from src import env_pool as env_pool_mod
 from src import model as model_mod
 from src import train as train_mod
@@ -48,7 +46,7 @@ DEFAULT_CONFIG = {
     "A_user": 10.0, 
     "lambda_true": 2.5,
     "N_pool": 2000, 
-    "dataset_size": 1000, 
+    "dataset_size": 4000, 
     "batch_size": 16, 
     "L": 100,
     "gamma": 0.05, 
@@ -152,12 +150,12 @@ def main(config: Dict[str, Any]):
         env_pool=env_pool, 
         dataset_q=dataset,
         S=int(config["S_cache"]), 
-        compute_utility_fn=utility_from_env_samples,
+        compute_utility_fn=batch_utility_from_env_samples,
         project_fn=project_capped_simplex, 
         config=train_config, 
         rng=rng,
         val_dataset_q=val_dataset_q, 
-        eval_fn=evaluate_model
+        # eval_fn=evaluate_model
     )
     print("[main] Training finished. Check the save directory for outputs.")
 
@@ -263,6 +261,7 @@ if __name__ == "__main__":
         "gamma": args.gamma, "S_cache": args.S_cache, "lambda_true": args.lambda_true,
     })
     try:
+        # main(cfg)
         run_full_sweep(cfg)
         generate_plots()
     except Exception as e:

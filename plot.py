@@ -26,58 +26,55 @@ def compute_cvar(losses, gamma):
     """
     sorted_losses = np.sort(losses)
     k = int(np.ceil(gamma * len(sorted_losses)))
-    cvar = np.mean(sorted_losses[:k])
+    cvar = np.mean(sorted_losses[-k:])
     return cvar
 
 def Utility_CDFs(results_folder):
-    """
-    Draw 4 CDF plots for utility from 4 different experiments (gamma_r, lambda, W, L).
-    Each plot will show the CDF of utility and mark CVaR and mean utility, then save them as images.
-    :param results_folder: Path to the folder where results of the experiments are saved.
-    """
-    # Ensure the "figures" folder exists
     if not os.path.exists("figures"):
         os.makedirs("figures")
 
     for i, experiment in enumerate(experiments):
-        # Set up a plot for each experiment
         fig, ax = plt.subplots(figsize=(7, 5))
         experiment_label = experiment["label"]
-        
-        # Collect utility and loss data for each folder in the experiment
+
+        first_cvar = True  # avoid repeating CVaR label in legend
         for folder in experiment["folders"]:
             folder_path = os.path.join(results_folder, folder, "checkpoints")
             file_paths = [os.path.join(folder_path, f) for f in os.listdir(folder_path) if f.startswith('TRAIN')]
-            
+
             for file_path in file_paths:
-                # Read the CSV file
                 df = pd.read_csv(file_path)
-                
-                # Extract utility and loss columns
-                utility = df['mean_utility_mean_RL2O-CVaR']  # or another method
+
                 loss = df['loss_train_mean']
-                
-                # Compute CVaR for the losses (assuming gamma=0.05 for CVaR)
-                cvar = compute_cvar(loss, 0.05)
-                
-                # Plot the CDF of the utility (1 - loss)
-                sorted_utility = np.sort(1 - loss)  # Utility is 1 - loss
+                # utility used for the CDF curve
+                sorted_utility = np.sort(1 - loss)
                 cdf = np.cumsum(np.ones_like(sorted_utility)) / len(sorted_utility)
-                
-                ax.plot(sorted_utility, cdf, label=f'{folder} - CDF', linewidth=2)
-                ax.axvline(x=cvar, color='red', linestyle='--', label=f'CVaR (gamma=0.05)')
-                ax.axvline(x=np.median(sorted_utility), color='green', linestyle=':', label='Median')
-        
-        # Customize the plot for this experiment
+
+                # plot CDF and capture its color
+                line = ax.plot(sorted_utility, cdf, label=f'{folder} - CDF', linewidth=2)[0]
+                color = line.get_color()
+
+                # CVaR vertical line (kept red); label only once
+                cvar = compute_cvar(loss, 0.05)
+                ax.axvline(
+                    x=cvar,  # NOTE: if x-axis is utility (1 - loss), consider x=1 - cvar
+                    color='red', linestyle='--',
+                    label='CVaR (gamma=0.05)' if first_cvar else '_nolegend_'
+                )
+                first_cvar = False
+
+                # Median vertical line in the SAME color as the CDF line
+                ax.axvline(
+                    x=np.median(sorted_utility),
+                    color=color, linestyle=':', label='Median'
+                )
+
         ax.set_title(f'{experiment_label} - Utility CDFs')
         ax.set_xlabel('Utility (1 - Loss)')
         ax.set_ylabel('CDF')
         ax.legend()
-
-        # Save the plot as an image in the "figures" folder
-        plot_filename = f"figures/1_Utility_CDF_{experiment_label}.png"
-        fig.savefig(plot_filename)
-        plt.close(fig)  # Close the figure after saving to avoid display
+        fig.savefig(f"figures/1_Utility_CDF_{experiment_label}.png")
+        plt.close(fig)
 
     print("All plots have been saved in the 'figures' folder.")
 
@@ -390,64 +387,61 @@ def plot_training_curves(results_folder='results', smoothing_window=10):
     :param results_folder: Path to the folder where experiment results are saved.
     :param smoothing_window: The window size for the rolling average of the training loss.
     """
-    # Ensure the "figures" directory exists
-    os.makedirs("figures", exist_ok=True)
-
     method_linestyles = {
         "RL2O-CVaR": "--",
         "Plug-in Mean-Opt": ":",
         "Popularity Heuristic (Top-S)": "-."
     }
-    
-    # Define a color palette for the parameter values
     color_palette = ['red', 'green', 'blue', 'yellow', 'purple', 'orange']
 
     for experiment in experiments:
-        fig, ax1 = plt.subplots(figsize=(12, 7))
-        
-        # Assign colors to each parameter value in the experiment
-        param_colors = {folder.split('=')[-1]: color_palette[i % len(color_palette)] for i, folder in enumerate(experiment["folders"])}
+        # give a bit more width; we’ll place legend outside on the right
+        fig, ax1 = plt.subplots(figsize=(14, 7))
 
+        param_colors = {
+            folder.split('=')[-1]: color_palette[i % len(color_palette)]
+            for i, folder in enumerate(experiment["folders"])
+        }
         experiment_label = experiment["label"]
-        
+
         for folder in experiment["folders"]:
             folder_path = os.path.join(results_folder, folder, "checkpoints")
-            # Find the training data file
             file_paths = glob.glob(os.path.join(folder_path, 'TRAIN*.csv'))
-            
             if not file_paths:
                 print(f"No training CSV found in {folder_path}")
                 continue
 
-            # Assuming one training file per folder
             df = pd.read_csv(file_paths[0])
             param_value = folder.split('=')[-1]
             color = param_colors[param_value]
-            
-            # --- Plot 1: Smoothed Training Loss (CVaR Objective) ---
-            smoothed_loss = df['loss_train_mean'].rolling(window=smoothing_window, min_periods=1).mean()
-            ax1.plot(df['epoch'], smoothed_loss, '-', color=color, label=f'Train Loss ({experiment["label"]}={param_value})', alpha=0.8)
 
-            # --- Plot 2: Validation CVaR ---
+            # Smoothed training loss
+            smoothed_loss = df['loss_train_mean'].rolling(window=smoothing_window, min_periods=1).mean()
+            ax1.plot(df['epoch'], smoothed_loss, '-', color=color,
+                     label=f'Train Loss ({experiment_label}={param_value})', alpha=0.8)
+
+            # Validation CVaR for each method
             for method, linestyle in method_linestyles.items():
                 cvar_col = f'CVaR_0.05_{method}'
-                
                 if cvar_col in df.columns:
-                    ax1.plot(df['epoch'], df[cvar_col], linestyle=linestyle, color=color, label=f'Val CVaR ({method}, {param_value})')
+                    ax1.plot(df['epoch'], df[cvar_col], linestyle=linestyle, color=color,
+                             label=f'Val CVaR ({method}, {param_value})')
 
-        # --- Formatting the plot ---
         ax1.set_xlabel('Epoch')
         ax1.set_ylabel('CVaR / Smoothed Loss')
         fig.suptitle(f'Training and Validation CVaR Curves: {experiment_label}', fontsize=16)
-        
-        # Create a legend
-        ax1.legend(loc='upper right')
-        
-        fig.tight_layout(rect=[0, 0.03, 1, 0.95]) # Adjust layout to make room for suptitle
 
-        # Save the plot
+        # ---- key change: put legend outside the axes on the right ----
+        handles, labels = ax1.get_legend_handles_labels()
+        ax1.legend(handles, labels, loc='center left', bbox_to_anchor=(1.02, 0.5),
+                   borderaxespad=0., frameon=True, fontsize=9)
+
+        # keep tight layout but leave room for the external legend + suptitle
+        fig.tight_layout(rect=[0, 0.03, 0.82, 0.95])
+
         plot_filename = f"figures/9_Training_Curves_{experiment_label}.png"
-        plt.savefig(plot_filename)
+        # ensure the external legend isn’t clipped
+        plt.savefig(plot_filename, dpi=200, bbox_inches='tight')
         plt.close(fig)
 
     print("All training curve plots have been saved in the 'figures' folder.")
@@ -463,4 +457,4 @@ def generate_plots():
     plot_training_curves()
 
 
-generate_plots()
+# generate_plots()

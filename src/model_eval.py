@@ -71,7 +71,7 @@ def evaluate_model(
 
             u_arr = np.array(u_vals)
             per_sample_loss = 1 - u_arr
-            var_gamma = np.quantile(per_sample_loss, gamma)
+            var_gamma = np.quantile(per_sample_loss, 1 - gamma)
             cvar_gamma = np.mean(per_sample_loss[per_sample_loss >= var_gamma])
             policy_results.append((u_arr.mean(), per_sample_loss.mean(), var_gamma, cvar_gamma))
 
@@ -149,7 +149,7 @@ def evaluate_all_policies(
 
                 u_arr = np.array(u_vals)
                 per_sample_loss = 1 - u_arr
-                var_gamma = np.quantile(per_sample_loss, gamma)
+                var_gamma = np.quantile(per_sample_loss,1- gamma)
                 cvar_gamma = np.mean(per_sample_loss[per_sample_loss >= var_gamma])
                 
                 policy_results.append((u_arr.mean(), per_sample_loss.mean(), var_gamma, cvar_gamma))

@@ -130,6 +130,31 @@ def _Q_torch_safe(z: torch.Tensor, eps: float = 1e-12) -> torch.Tensor:
     q = torch.where(use_asymptotic, asymptotic, standard)
     return torch.clamp(q, min=eps)
 
+
+# def p_succ_alpha4(
+#     lam_i: torch.Tensor,
+#     lam_I: torch.Tensor,
+#     theta: float,
+# ) -> torch.Tensor:
+#     """
+#     Compute per-file success probability under alpha=4 closed-form kernel.
+#     Uses log-domain computation for numerical stability.
+#     """
+#     # Compute rho using the provided equation
+#     rho = rho_theta_alpha4(theta)  # compute rho(theta, 4) using the updated formula
+
+#     # Compute the success probability as per the given formula
+#     p_succ = lam_i / (lam_i + lam_I * rho)
+
+#     return torch.clamp(p_succ, min=0.0, max=1.0)
+
+
+# lam_i = torch.tensor(5.0)  # scalar value for lambda_i
+# lam_I = torch.tensor(3.0)  # scalar value for lambda_I
+# theta = 4.0  # scalar value for theta
+# print(p_succ_alpha4(lam_i, lam_I, theta))
+
+
 def p_succ_alpha4(
     lam_i: torch.Tensor,
     lam_I: torch.Tensor,
@@ -222,13 +247,81 @@ def utility_from_env_samples(
     lam_I = lam_I.view(-1, 1)  # broadcastable to (L,M)
 
     # compute per-file success probabilities (L,M)
-    P_succ = p_succ_alpha4(lam_i, lam_I, theta, P_t=P_t, N0=N0, mu=mu)
+    P_succ = p_succ_alpha4(lam_i, lam_I, theta)
 
     # per-scenario utility U = sum_i p_i * P_succ_i
     U = torch.sum(p_samples * P_succ, dim=1)  # (L,)
     # ensure numerical safety
     U = torch.clamp(U, 0.0, 1.0)
     return U
+
+
+import torch
+
+def batch_utility_from_env_samples(
+    p_samples: torch.Tensor,   # (B, L, M)
+    lam_samples: torch.Tensor, # (B, L)
+    x: torch.Tensor,           # (B, M)  (or accidentally (B,1,M) -> handled)
+    theta: float = 1.0,
+    lambda_I_factor: float = 1.0,
+    P_t: float = 1.0,
+    N0: float = 1e-9,
+    mu: float = 1.0
+) -> torch.Tensor:
+    """
+    Batched utility: returns U with shape (B, L).
+    """
+
+    if p_samples.dim() != 3:
+        raise ValueError(f"p_samples must be (B,L,M), got {tuple(p_samples.shape)}")
+    if lam_samples.dim() != 2:
+        raise ValueError(f"lam_samples must be (B,L), got {tuple(lam_samples.shape)}")
+    if x.dim() not in (2, 3):
+        raise ValueError(f"x must be (B,M) or (B,1,M), got {tuple(x.shape)}")
+
+    # Squeeze accidental x_exp (B,1,M) to (B,M)
+    if x.dim() == 3:
+        if x.shape[1] != 1:
+            raise ValueError(f"x has unexpected 3D shape {tuple(x.shape)}; expected (B,1,M)")
+        x = x.squeeze(1)  # -> (B,M)
+
+    # Align dtype/device to p_samples
+    device = p_samples.device
+    dtype  = p_samples.dtype
+    lam_samples = lam_samples.to(device=device, dtype=dtype)
+    x = x.to(device=device, dtype=dtype)
+
+    B, L, M = p_samples.shape
+    if lam_samples.shape != (B, L):
+        raise ValueError(f"lam_samples shape {tuple(lam_samples.shape)} != (B,L)=({B},{L})")
+    if x.shape != (B, M):
+        raise ValueError(f"x shape {tuple(x.shape)} != (B,M)=({B},{M})")
+
+    # Broadcast to per-file intensities: lam_i = lam * x
+    x_b  = x.unsqueeze(1)              # (B,1,M)
+    lam  = lam_samples.unsqueeze(-1)   # (B,L,1)
+    lam_i = lam * x_b                  # (B,L,M)
+
+    # Interferer intensity: lam_I = lam * factor
+    lam_I = lam * float(lambda_I_factor)  # (B,L,1)
+
+    # Flatten along (B,L) if p_succ expects 2D
+    BL = B * L
+    lam_i_flat = lam_i.reshape(BL, M)     # (BL,M)
+    lam_I_flat = lam_I.reshape(BL, 1)     # (BL,1)
+
+    # Compute per-file success probabilities
+    P_succ_flat = p_succ_alpha4(lam_i_flat, lam_I_flat, theta)
+    if P_succ_flat.dim() != 2 or P_succ_flat.shape != (BL, M):
+        # Be strict to surface bugs early
+        raise ValueError(
+            f"p_succ_alpha4 must return (BL,M)=({BL},{M}), got {tuple(P_succ_flat.shape)}"
+        )
+    P_succ = P_succ_flat.view(B, L, M)    # (B,L,M)
+
+    # U_b,l = sum_i p_{b,l,i} * Psucc_{b,l,i}
+    U = torch.sum(p_samples * P_succ, dim=2)  # (B,L)
+    return torch.clamp(U, 0.0, 1.0)
 
 
 # ----------------------------
