@@ -432,7 +432,8 @@ def smoothed_cvar_loss_from_utilities(
     # CRITICAL FIX: Use F.softplus(z, beta=tau) which correctly implements
     # (1/tau) * log(1 + exp(tau * z)).
     t_star_col = t_star.view(-1, 1)
-    s_vals = F.softplus(ell - t_star_col, beta=tau)  # (B, L)
+    # s_vals = F.softplus(ell - t_star_col, beta=tau)  # (B, L)
+    s_vals = F.softplus(tau * (ell - t_star_col)) / tau
     
     # compute Phi(t_star) = t + (1/(gamma L)) sum s_tau(ell - t)
     Phi = t_star + (1.0 / (gamma * float(L))) * s_vals.sum(dim=1)  # shape (B,)

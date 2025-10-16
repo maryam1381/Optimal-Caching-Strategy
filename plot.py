@@ -1,7 +1,7 @@
 import pandas as pd
 import matplotlib.pyplot as plt
 import re
-import os # os is used for checking if files exist
+import os  # os is used for checking if files exist
 import seaborn as sns
 import re
 import glob
@@ -18,12 +18,6 @@ experiments = [
     ]
 
 def compute_cvar(losses, gamma):
-    """
-    Compute the empirical CVaR for given losses and quantile gamma.
-    :param losses: List or array of losses.
-    :param gamma: Quantile for CVaR calculation (between 0 and 1).
-    :return: CVaR of the losses.
-    """
     sorted_losses = np.sort(losses)
     k = int(np.ceil(gamma * len(sorted_losses)))
     cvar = np.mean(sorted_losses[-k:])
@@ -33,50 +27,56 @@ def Utility_CDFs(results_folder):
     if not os.path.exists("figures"):
         os.makedirs("figures")
 
-    for i, experiment in enumerate(experiments):
+    for experiment in experiments:
         fig, ax = plt.subplots(figsize=(7, 5))
         experiment_label = experiment["label"]
+        first_cvar = True
 
-        first_cvar = True  # avoid repeating CVaR label in legend
         for folder in experiment["folders"]:
             folder_path = os.path.join(results_folder, folder, "checkpoints")
-            file_paths = [os.path.join(folder_path, f) for f in os.listdir(folder_path) if f.startswith('TRAIN')]
+            file_paths = [os.path.join(folder_path, f)
+                          for f in os.listdir(folder_path) if f.startswith('TRAIN')]
 
             for file_path in file_paths:
                 df = pd.read_csv(file_path)
 
-                loss = df['loss_train_mean']
-                # utility used for the CDF curve
-                sorted_utility = np.sort(1 - loss)
+                # ✅ FIX: use real utility column instead of 1 - loss
+                util_col = None
+                for c in df.columns:
+                    if 'mean_utility_mean_' in c:
+                        util_col = c
+                        break
+                if util_col is None:
+                    continue
+                utility = df[util_col].to_numpy()
+                sorted_utility = np.sort(utility)
                 cdf = np.cumsum(np.ones_like(sorted_utility)) / len(sorted_utility)
 
-                # plot CDF and capture its color
                 line = ax.plot(sorted_utility, cdf, label=f'{folder} - CDF', linewidth=2)[0]
                 color = line.get_color()
 
-                # CVaR vertical line (kept red); label only once
-                cvar = compute_cvar(loss, 0.05)
-                ax.axvline(
-                    x=cvar,  # NOTE: if x-axis is utility (1 - loss), consider x=1 - cvar
-                    color='red', linestyle='--',
-                    label='CVaR (gamma=0.05)' if first_cvar else '_nolegend_'
-                )
-                first_cvar = False
+                # ✅ FIX: CVaR line plotted as 1 - CVaR(loss)
+                if 'CVaR_0.05_RL2O-CVaR' in df.columns:
+                    cvar_loss = float(df['CVaR_0.05_RL2O-CVaR'].iloc[-1])
+                    cvar_util = np.clip(1.0 - cvar_loss, 0.0, 1.0)
+                    ax.axvline(
+                        x=cvar_util,
+                        color=color, linestyle='--',
+                        label='CVaR (γ=0.05)' if first_cvar else '_nolegend_'
+                    )
+                    first_cvar = False
 
-                # Median vertical line in the SAME color as the CDF line
-                ax.axvline(
-                    x=np.median(sorted_utility),
-                    color=color, linestyle=':', label='Median'
-                )
+                # Median line
+                ax.axvline(x=np.median(sorted_utility), color=color, linestyle=':', label='Median')
 
         ax.set_title(f'{experiment_label} - Utility CDFs')
-        ax.set_xlabel('Utility (1 - Loss)')
+        ax.set_xlabel('Utility')
         ax.set_ylabel('CDF')
         ax.legend()
         fig.savefig(f"figures/1_Utility_CDF_{experiment_label}.png")
         plt.close(fig)
 
-    print("All plots have been saved in the 'figures' folder.")
+    print("Utility CDF plots saved.")
 
 
 def Mean_vs_CVaR_tradeoff_scatter(results_folder):
@@ -89,43 +89,30 @@ def Mean_vs_CVaR_tradeoff_scatter(results_folder):
     if not os.path.exists("figures"):
         os.makedirs("figures")
 
-    for i, experiment in enumerate(experiments):
-        # Set up a plot for each experiment
+    for experiment in experiments:
         fig, ax = plt.subplots(figsize=(7, 5))
         experiment_label = experiment["label"]
-        
-        # Collect utility and loss data for each folder in the experiment
+
         for folder in experiment["folders"]:
             folder_path = os.path.join(results_folder, folder, "checkpoints")
-            file_paths = [os.path.join(folder_path, f) for f in os.listdir(folder_path) if f.startswith('TRAIN')]
-            
+            file_paths = [os.path.join(folder_path, f)
+                          for f in os.listdir(folder_path) if f.startswith('TRAIN')]
+
             for file_path in file_paths:
-                # Read the CSV file
                 df = pd.read_csv(file_path)
-                
-                # Extract utility and loss columns
-                utility = df['mean_utility_mean_RL2O-CVaR']  # or another method
-                loss = df['loss_train_mean']
-                
-                # Compute CVaR for the losses (assuming gamma=0.05 for CVaR)
-                cvar = compute_cvar(loss, 0.05)
-                
-                # Plot the mean utility vs CVaR
-                ax.scatter(np.mean(utility), cvar, label=f'{folder}', alpha=0.7)
-        
-        # Customize the plot for this experiment
+                if 'mean_utility_mean_RL2O-CVaR' in df.columns and 'CVaR_0.05_RL2O-CVaR' in df.columns:
+                    util = float(df['mean_utility_mean_RL2O-CVaR'].iloc[-1])
+                    cvar = float(df['CVaR_0.05_RL2O-CVaR'].iloc[-1])
+                    ax.scatter(util, cvar, label=f'{folder}', alpha=0.7)
+
         ax.set_title(f'{experiment_label} - Mean vs CVaR Tradeoff')
         ax.set_xlabel('Mean Utility')
-        ax.set_ylabel('CVaR (gamma=0.05)')
+        ax.set_ylabel('CVaR (γ=0.05)')
         ax.legend()
+        fig.savefig(f"figures/2_Mean_vs_CVaR_{experiment_label}.png")
+        plt.close(fig)
 
-        # Save the plot as an image in the "figures" folder
-        plot_filename = f"figures/2_Mean_vs_CVaR_tradeoff_{experiment_label}.png"
-        fig.savefig(plot_filename)
-        plt.close(fig)  # Close the figure after saving to avoid display
-
-    print("All plots have been saved in the 'figures' folder.")
-
+    print("Mean vs CVaR scatter plots saved.")
 
 def plot_cvar_vs_w(results_folder):
     """
@@ -139,19 +126,19 @@ def plot_cvar_vs_w(results_folder):
         for folder in experiment["folders"]:
             folder_path = os.path.join(results_folder, folder, "checkpoints")
             file_paths = [os.path.join(folder_path, f) for f in os.listdir(folder_path) if f.startswith('TRAIN')]
-            
+
             for file_path in file_paths:
                 df = pd.read_csv(file_path)
-                
+
                 loss = df['loss_train_mean']
-                
+
                 # For "exp3_W" folder, extract the W value from the folder name
                 if "exp3_W" in folder:
                     W_value = int(folder.split('=')[-1])  
-                    
+
                     # Compute CVaR for the losses (assuming gamma=0.05 for CVaR)
                     cvar = compute_cvar(loss, 0.05)
-                    
+
                     # Collect data for CVaR vs W plot
                     cvar_vs_w_data.append({"method": folder, "W": W_value, "CVaR": cvar})
 
@@ -191,14 +178,14 @@ def plot_loss_distribution_sorted(results_folder):
         for folder in experiment["folders"]:
             folder_path = os.path.join(results_folder, folder, "checkpoints")
             file_paths = [os.path.join(folder_path, f) for f in os.listdir(folder_path) if f.startswith('TRAIN')]
-            
+
             for file_path in file_paths:
                 # Read the CSV file
                 df = pd.read_csv(file_path)
-                
+
                 # Extract loss data and method for the plot
-                loss = df['loss_train_mean']
-                method = folder.split('=')[-1]  # Extract method name (e.g., "gamma_r=0.6")
+                loss = df['loss_train_mean']  # Use the correct column name for the loss
+                method = folder.split('=')[-1]  # Extract method name (e.g., "gamma_r=0.6", "Lambda=1.5", etc.)
 
                 for l in loss:
                     loss_distribution_data.append({"method": method, "loss": l})
@@ -458,3 +445,4 @@ def generate_plots():
 
 
 # generate_plots()
+

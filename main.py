@@ -16,9 +16,8 @@ import json
 import sys
 from pathlib import Path
 from typing import Dict, Any
-
 import numpy as np
-
+import torch
 from plot import generate_plots
 from src.model_eval import evaluate_model
 from src.losses import batch_utility_from_env_samples, project_capped_simplex
@@ -46,11 +45,11 @@ DEFAULT_CONFIG = {
     "A_user": 10.0, 
     "lambda_true": 2.5,
     "N_pool": 2000, 
-    "dataset_size": 4000, 
+    "dataset_size": 1000, 
     "batch_size": 16, 
-    "L": 100,
+    "L": 128,
     "gamma": 0.05, 
-    "tau": 20.0, 
+    "tau": 10.0, 
     "lr": 1e-3, 
     "epochs": 10, 
     "S_cache": 10,
@@ -59,6 +58,30 @@ DEFAULT_CONFIG = {
     "seed": 42,
     "save_dir": "results/",
 }
+# DEFAULT_CONFIG = {
+#     "M": 100, 
+#     "W": 200, 
+#     "gamma_r": 0.8, 
+#     "a0_p": 1.0,
+#     "a0_lambda": 1.0, 
+#     "b0": 1.0, 
+#     "A_user": 10.0, 
+#     "lambda_true": 2.5,
+#     "N_pool": 2000, 
+#     "dataset_size": 2000, 
+#     "batch_size": 16, 
+#     "L": 256,  # Increased sample size for more robust training
+#     "gamma": 0.1,  # Increased gamma for broader risk perspective
+#     "tau": 10.0,  # Increased tau for better CVaR smoothing
+#     "lr": 5e-4,  # Lowered learning rate for smoother convergence
+#     "epochs": 50,  # Increased epochs for more training time
+#     "S_cache": 20,  # Increased cache size to allow more capacity
+#     "hidden_small": False,  # Use larger hidden layers
+#     "dropout": 0.1,  # Added dropout to prevent overfitting
+#     "seed": 42,
+#     "save_dir": "results/",
+# }
+
 
 # -------------------------
 # Utility: build synthetic measurement dataset q
@@ -261,9 +284,18 @@ if __name__ == "__main__":
         "gamma": args.gamma, "S_cache": args.S_cache, "lambda_true": args.lambda_true,
     })
     try:
-        # main(cfg)
+        # # main(cfg)
         run_full_sweep(cfg)
         generate_plots()
+
     except Exception as e:
         print("Raise error :", e)
     
+
+# import torch
+# print(torch.__version__)
+
+# device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+# # Print which device is being used
+# print(f"Using device: {device}")
