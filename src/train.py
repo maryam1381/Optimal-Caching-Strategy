@@ -35,7 +35,7 @@ from src.eval import mean_opt_plug_in, plugin_mean_policy, popularity_determinis
 from src.model_eval import evaluate_all_policies
 from src.utils import to_torch, append_row_csv as append_log
 
-from src.losses import smoothed_cvar_loss_from_utilities, project_capped_simplex, utility_from_env_samples
+from src.losses import single_utility_from_env, smoothed_cvar_loss_from_utilities, project_capped_simplex, utility_from_env_samples
 
 
 
@@ -49,7 +49,7 @@ class TrainConfig:
     L: int = 500                # number of posterior draws per measurement
     batch_size: int = 16
     gamma_tail: float = 0.05    # CVaR level (e.g., 0.05)
-    tau: float = 20.0           # softplus sharpness (CRITICAL FIX: Changed from 5 to 20)
+    tau: float = 10           # softplus sharpness (CRITICAL FIX: Changed from 5 to 20)
     epochs: int = 100
     lr: float = 1e-3
     weight_decay: float = 1e-4
@@ -176,6 +176,8 @@ def train_loop(
             # (4) Compute CVaR loss from utilities
             loss, _ = smoothed_cvar_loss_from_utilities(U, gamma=config.gamma_tail, tau=config.tau)
 
+            # loss = loss.detach()
+
             # (5) Backprop, clip, step
             loss.backward()
             if config.clip_grad_norm and config.clip_grad_norm > 0:
@@ -198,12 +200,12 @@ def train_loop(
             # --- EFFICIENT FIX: Pre-compute the Plug-in Mean-Opt policy ONCE ---
             p_bar_global = p_pool.mean(axis=0)
             lambda_bar_global = float(lam_pool.mean())
-            
+
             x_opt_mean_plugin = mean_opt_plug_in(
                 p_bar=p_bar_global,
                 lambda_bar=lambda_bar_global,
                 S=S,
-                compute_utility_fn=utility_from_env_samples,
+                compute_utility_fn=single_utility_from_env, # Use the new function
                 project_fn=project_fn,
                 M=M,
                 device=device,
@@ -229,7 +231,7 @@ def train_loop(
                 val_dataset_q=val_dataset_q,
                 env_pool_list=list(zip(p_pool, lam_pool)),
                 project_fn=project_fn,
-                compute_utility_fn=utility_from_env_samples,
+                compute_utility_fn=single_utility_from_env,
                 S=S,
                 gamma=config.gamma_tail,
                 device=torch.device(device),

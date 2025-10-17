@@ -248,38 +248,84 @@ def popularity_deterministic_topS(p_bar: np.ndarray, S: int) -> np.ndarray:
     return x
 
 
+# def popularity_proportional(p_bar: np.ndarray, S: float) -> np.ndarray:
+#     """
+#     Proportional baseline: set x_i \\propto p_bar_i and rescale to satisfy sum x = S, clip to [0,1].
+#     Implementation details:
+#       - start with y = p_bar / sum(p_bar) * S  (equals p_bar*S since p_bar sums to 1)
+#       - clip y to [0,1]
+#       - if sum clipped <= S, return clipped; otherwise re-scale the un-clipped components to make sum=S (waterfilling-like).
+#     This is simple heuristic and roughly matches literature suggestion.
+#     """
+#     M = p_bar.size
+#     if S <= 0:
+#         return np.zeros(M)
+#     if S >= M:
+#         return np.ones(M)
+
+#     y = p_bar * S  # since p_bar sums to 1
+#     y = np.clip(y, 0.0, 1.0)
+#     s = y.sum()
+#     if s <= S:
+#         return y
+#     # need to rescale downwards while keeping clipping at 0/1 - simple iterative scheme
+#     # Use the same projection onto capped simplex as used in training:
+#     # We rely on projection function provided externally; fallback: simple normalization and clipping
+#     y = y / y.sum() * S
+#     y = np.clip(y, 0.0, 1.0)
+#     # final adjustment if still off
+#     if abs(y.sum() - S) > 1e-6:
+#         # uniform redistribution: scale then clip then waterfill small leftover
+#         # fallback simple normalization:
+#         y = y / y.sum() * S
+#     return y
+
 def popularity_proportional(p_bar: np.ndarray, S: float) -> np.ndarray:
     """
-    Proportional baseline: set x_i \\propto p_bar_i and rescale to satisfy sum x = S, clip to [0,1].
-    Implementation details:
-      - start with y = p_bar / sum(p_bar) * S  (equals p_bar*S since p_bar sums to 1)
-      - clip y to [0,1]
-      - if sum clipped <= S, return clipped; otherwise re-scale the un-clipped components to make sum=S (waterfilling-like).
-    This is simple heuristic and roughly matches literature suggestion.
+    Proportional baseline: set x_i \\propto p_bar_i, ensuring sum(x) == S
+    and 0 <= x_i <= 1 through a robust clipping and redistribution process.
     """
-    M = p_bar.size
+    M = len(p_bar)
     if S <= 0:
-        return np.zeros(M)
+        return np.zeros(M, dtype=float)
     if S >= M:
-        return np.ones(M)
+        return np.ones(M, dtype=float)
 
-    y = p_bar * S  # since p_bar sums to 1
-    y = np.clip(y, 0.0, 1.0)
-    s = y.sum()
-    if s <= S:
-        return y
-    # need to rescale downwards while keeping clipping at 0/1 - simple iterative scheme
-    # Use the same projection onto capped simplex as used in training:
-    # We rely on projection function provided externally; fallback: simple normalization and clipping
-    y = y / y.sum() * S
-    y = np.clip(y, 0.0, 1.0)
-    # final adjustment if still off
-    if abs(y.sum() - S) > 1e-6:
-        # uniform redistribution: scale then clip then waterfill small leftover
-        # fallback simple normalization:
-        y = y / y.sum() * S
-    return y
+    # Initial proportional allocation
+    x = p_bar * S
+    
+    # Iteratively handle elements that are > 1 until no more changes are needed
+    while True:
+        # 1. Identify elements that are over-budget (> 1)
+        over_budget_mask = x > 1.0
+        
+        # If no elements are over budget, the process is stable.
+        if not np.any(over_budget_mask):
+            break
 
+        # 2. Get the total excess budget from these over-allocated items
+        excess_budget = np.sum(x[over_budget_mask] - 1.0)
+        
+        # 3. Set the over-budget items to 1.0 (their final, capped value)
+        x[over_budget_mask] = 1.0
+        
+        # 4. Identify elements that are still "active" (not yet capped at 1.0)
+        active_mask = x < 1.0
+        
+        if not np.any(active_mask):
+            # This case occurs if S >= M, handled at the start, but included for safety.
+            break
+
+        # 5. Redistribute the excess budget proportionally among the active elements
+        #    based on their original popularities.
+        active_p_bar = p_bar[active_mask]
+        
+        # Ensure we don't divide by zero if there are no active popularities left
+        if active_p_bar.sum() > 1e-9:
+             x[active_mask] += excess_budget * (active_p_bar / active_p_bar.sum())
+
+    # Final clip for safety against floating point inaccuracies
+    return np.clip(x, 0.0, 1.0)
 
 def mean_opt_plug_in(
     p_bar: np.ndarray,

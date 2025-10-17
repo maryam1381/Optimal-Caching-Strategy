@@ -366,6 +366,8 @@ def plot_cvar_vs_l(results_folder):
 
     print("CVaR vs L plot has been saved in the 'figures' folder.")
 
+
+
 def plot_training_curves(results_folder='results', smoothing_window=10):
     """
     Plots training and validation CVaR curves for each experiment.
@@ -379,7 +381,7 @@ def plot_training_curves(results_folder='results', smoothing_window=10):
         "Plug-in Mean-Opt": ":",
         "Popularity Heuristic (Top-S)": "-."
     }
-    color_palette = ['red', 'green', 'blue', 'yellow', 'purple', 'orange']
+    color_palette = ['red', 'green', 'blue', 'orange']
 
     for experiment in experiments:
         # give a bit more width; we’ll place legend outside on the right

@@ -158,7 +158,7 @@ def _Q_torch_safe(z: torch.Tensor, eps: float = 1e-12) -> torch.Tensor:
 def p_succ_alpha4(
     lam_i: torch.Tensor,
     lam_I: torch.Tensor,
-    theta: float,
+    theta: float = 10.0,
     P_t: float = 1.0,
     N0: float = 1e-9,
     mu: float = 1.0,
@@ -196,6 +196,41 @@ def p_succ_alpha4(
 # ----------------------------
 # Utility evaluation from a single x and many env samples
 # ----------------------------
+# Add this new function to src/losses.py
+
+def single_utility_from_env(
+    p: torch.Tensor,           # (M,)
+    lam: torch.Tensor,         # scalar
+    x: torch.Tensor,           # (M,)
+    theta: float = 1.0,
+    lambda_I_factor: float = 1.0,
+    P_t: float = 1.0,
+    N0: float = 1e-9,
+    mu: float = 1.0
+) -> torch.Tensor:
+    """
+    Computes utility for a single policy vector x in a single environment (p, lam).
+    """
+    device = x.device
+    dtype = x.dtype
+    
+    # Ensure inputs are tensors on the correct device
+    if not torch.is_tensor(p):
+        p = torch.tensor(p, dtype=dtype, device=device)
+    if not torch.is_tensor(lam):
+        lam = torch.tensor(lam, dtype=dtype, device=device)
+
+    # Calculate per-file success probabilities
+    lam_i = lam * x
+    lam_I = lam * lambda_I_factor
+    
+    # lam_I is a scalar, needs to be expanded for p_succ_alpha4
+    P_succ = p_succ_alpha4(lam_i, lam_I.expand_as(lam_i), theta, P_t, N0, mu)
+    
+    # Compute final utility
+    U = torch.sum(p * P_succ)
+    return torch.clamp(U, 0.0, 1.0)
+
 def utility_from_env_samples(
     p_samples: torch.Tensor,
     lam_samples: torch.Tensor,
@@ -254,9 +289,6 @@ def utility_from_env_samples(
     # ensure numerical safety
     U = torch.clamp(U, 0.0, 1.0)
     return U
-
-
-import torch
 
 def batch_utility_from_env_samples(
     p_samples: torch.Tensor,   # (B, L, M)
@@ -337,8 +369,8 @@ def solve_t_star_bisection(
     ell: torch.Tensor,
     gamma: float,
     tau: float,
-    tol: float = 1e-4,
-    max_iter: int = 40
+    tol: float = 1e-6,
+    max_iter: int = 60
 ) -> torch.Tensor:
     """
     Solve for t* that satisfies: 1 = (1/(gamma L)) * sum_{s} sigma_tau(ell_s - t)
@@ -428,7 +460,7 @@ def smoothed_cvar_loss_from_utilities(
 
     # solve t* per row
     t_star = solve_t_star_bisection(ell, gamma=gamma, tau=tau, tol=tol, max_iter=max_iter)  # shape (B,)
-
+    t_star = t_star.detach() 
     # CRITICAL FIX: Use F.softplus(z, beta=tau) which correctly implements
     # (1/tau) * log(1 + exp(tau * z)).
     t_star_col = t_star.view(-1, 1)

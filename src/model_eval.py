@@ -45,7 +45,7 @@ def evaluate_model(
     Evaluates the model, returns performance metrics and inference times.
     Now, inference times are added directly to the metrics dictionary.
     """
-    device = get_device()
+    device = get_device(False)
     model.to(device)
     policy_results = []
     inference_times = []
