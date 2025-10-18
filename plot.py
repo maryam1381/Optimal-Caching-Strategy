@@ -339,8 +339,7 @@ def plot_cvar_vs_l(results_folder):
             df = pd.read_csv(file_path)
 
             # Extract CVaR_0.05_* data (assuming column names like "CVaR_0.05_RL2O-CVaR")
-            cvar_05 = df['CVaR_0.05_RL2O-CVaR'].values[0]  # Take the first value for each file (or adjust accordingly)
-
+            cvar_05 = df['CVaR_0.05_RL2O-CVaR'].values[-1]  # takes final epoch's CVaR (after training)
             # Collect data for plotting
             sample_size = int(folder.split('=')[1])  # Extract L value from folder name
             cvar_data.append({"L": sample_size, "cvar": cvar_05})
