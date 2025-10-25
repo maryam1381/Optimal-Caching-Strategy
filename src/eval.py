@@ -248,90 +248,98 @@ def popularity_deterministic_topS(p_bar: np.ndarray, S: int) -> np.ndarray:
     return x
 
 
-# def popularity_proportional(p_bar: np.ndarray, S: float) -> np.ndarray:
-#     """
-#     Proportional baseline: set x_i \\propto p_bar_i and rescale to satisfy sum x = S, clip to [0,1].
-#     Implementation details:
-#       - start with y = p_bar / sum(p_bar) * S  (equals p_bar*S since p_bar sums to 1)
-#       - clip y to [0,1]
-#       - if sum clipped <= S, return clipped; otherwise re-scale the un-clipped components to make sum=S (waterfilling-like).
-#     This is simple heuristic and roughly matches literature suggestion.
-#     """
-#     M = p_bar.size
-#     if S <= 0:
-#         return np.zeros(M)
-#     if S >= M:
-#         return np.ones(M)
-
-#     y = p_bar * S  # since p_bar sums to 1
-#     y = np.clip(y, 0.0, 1.0)
-#     s = y.sum()
-#     if s <= S:
-#         return y
-#     # need to rescale downwards while keeping clipping at 0/1 - simple iterative scheme
-#     # Use the same projection onto capped simplex as used in training:
-#     # We rely on projection function provided externally; fallback: simple normalization and clipping
-#     y = y / y.sum() * S
-#     y = np.clip(y, 0.0, 1.0)
-#     # final adjustment if still off
-#     if abs(y.sum() - S) > 1e-6:
-#         # uniform redistribution: scale then clip then waterfill small leftover
-#         # fallback simple normalization:
-#         y = y / y.sum() * S
-#     return y
-
 def popularity_proportional(p_bar: np.ndarray, S: float) -> np.ndarray:
     """
-    Proportional baseline: set x_i \\propto p_bar_i, ensuring sum(x) == S
-    and 0 <= x_i <= 1 through a robust clipping and redistribution process.
+    Proportional baseline: set x_i \\propto p_bar_i and rescale to satisfy sum x = S, clip to [0,1].
+    Implementation details:
+      - start with y = p_bar / sum(p_bar) * S  (equals p_bar*S since p_bar sums to 1)
+      - clip y to [0,1]
+      - if sum clipped <= S, return clipped; otherwise re-scale the un-clipped components to make sum=S (waterfilling-like).
+    This is simple heuristic and roughly matches literature suggestion.
     """
-    M = len(p_bar)
+    M = p_bar.size
     if S <= 0:
-        return np.zeros(M, dtype=float)
+        return np.zeros(M)
     if S >= M:
-        return np.ones(M, dtype=float)
+        return np.ones(M)
 
-    # Initial proportional allocation
-    x = p_bar * S
+    y = p_bar * S  # since p_bar sums to 1
+    y = np.clip(y, 0.0, 1.0)
+    s = y.sum()
+    if s <= S:
+        return y
+    # need to rescale downwards while keeping clipping at 0/1 - simple iterative scheme
+    # Use the same projection onto capped simplex as used in training:
+    # We rely on projection function provided externally; fallback: simple normalization and clipping
+    y = y / y.sum() * S
+    y = np.clip(y, 0.0, 1.0)
+    # final adjustment if still off
+    if abs(y.sum() - S) > 1e-6:
+        # uniform redistribution: scale then clip then waterfill small leftover
+        # fallback simple normalization:
+        y = y / y.sum() * S
+    return y
+
+
+# def mean_opt_plug_in(
+#     p_bar: np.ndarray,
+#     lambda_bar: float,
+#     S: float,
+#     compute_utility_fn: Callable[[np.ndarray, float, np.ndarray], float],
+#     project_fn: Callable[[torch.Tensor, float], torch.Tensor],
+#     M: int,
+#     lr: float = 1e-2,
+#     steps: int = 400,
+#     device: str = "cpu",
+#     verbose: bool = False
+# ) -> np.ndarray:
+#     """
+#     Compute plug-in mean-opt policy by maximizing expected utility under posterior mean parameters (p_bar, lambda_bar).
+#     We use projected gradient ascent implemented with PyTorch autograd.
+#     """
+#     # **BUG FIX**: Handle the zero-capacity edge case
+#     if S <= 1e-9:
+#         return np.zeros(M, dtype=np.float32)
+
+#     device_t = torch.device(device)
     
-    # Iteratively handle elements that are > 1 until no more changes are needed
-    while True:
-        # 1. Identify elements that are over-budget (> 1)
-        over_budget_mask = x > 1.0
-        
-        # If no elements are over budget, the process is stable.
-        if not np.any(over_budget_mask):
-            break
+#     # Initialize x as a parameter for the optimizer
+#     x = torch.full((M,), float(S) / M, dtype=torch.float32, device=device_t, requires_grad=True)
+    
+#     # Use a standard PyTorch optimizer
+#     optimizer = optim.Adam([x], lr=lr)
 
-        # 2. Get the total excess budget from these over-allocated items
-        excess_budget = np.sum(x[over_budget_mask] - 1.0)
-        
-        # 3. Set the over-budget items to 1.0 (their final, capped value)
-        x[over_budget_mask] = 1.0
-        
-        # 4. Identify elements that are still "active" (not yet capped at 1.0)
-        active_mask = x < 1.0
-        
-        if not np.any(active_mask):
-            # This case occurs if S >= M, handled at the start, but included for safety.
-            break
+#     p_t = torch.from_numpy(p_bar.astype(np.float32)).to(device_t)
+#     lam_t = torch.tensor(float(lambda_bar), dtype=torch.float32, device=device_t)
 
-        # 5. Redistribute the excess budget proportionally among the active elements
-        #    based on their original popularities.
-        active_p_bar = p_bar[active_mask]
+#     for it in range(steps):
+#         optimizer.zero_grad()
         
-        # Ensure we don't divide by zero if there are no active popularities left
-        if active_p_bar.sum() > 1e-9:
-             x[active_mask] += excess_budget * (active_p_bar / active_p_bar.sum())
+#         # Project x to ensure it's a valid policy for the utility calculation
+#         x_proj = project_fn(x, S)
+        
+#         # We want to maximize utility, so we minimize its negative
+#         loss = -compute_utility_fn(p_t, lam_t, x_proj)
+        
+#         loss.backward()
+#         optimizer.step()
 
-    # Final clip for safety against floating point inaccuracies
-    return np.clip(x, 0.0, 1.0)
+#         # After the optimizer step, project x back into the feasible set
+#         with torch.no_grad():
+#             x.data = project_fn(x.data, S)
+
+#         if verbose and (it % 100 == 0):
+#             print(f"[mean_opt] iter {it}/{steps}, utility={-loss.item():.6f}")
+
+#     # Return the final optimized and projected policy
+#     x_opt = project_fn(x, S).detach().cpu().numpy()
+#     return x_opt
 
 def mean_opt_plug_in(
     p_bar: np.ndarray,
     lambda_bar: float,
     S: float,
-    compute_utility_fn: Callable[[np.ndarray, float, np.ndarray], float],
+    compute_utility_fn: Callable[[torch.Tensor, float, torch.Tensor], float],
     project_fn: Callable[[torch.Tensor, float], torch.Tensor],
     M: int,
     lr: float = 1e-2,
@@ -352,8 +360,7 @@ def mean_opt_plug_in(
     # Initialize x as a parameter for the optimizer
     x = torch.full((M,), float(S) / M, dtype=torch.float32, device=device_t, requires_grad=True)
     
-    # Use a standard PyTorch optimizer
-    optimizer = optim.Adam([x], lr=lr)
+    optimizer = optim.SGD([x], lr=lr)
 
     p_t = torch.from_numpy(p_bar.astype(np.float32)).to(device_t)
     lam_t = torch.tensor(float(lambda_bar), dtype=torch.float32, device=device_t)
@@ -361,25 +368,83 @@ def mean_opt_plug_in(
     for it in range(steps):
         optimizer.zero_grad()
         
-        # Project x to ensure it's a valid policy for the utility calculation
-        x_proj = project_fn(x, S)
-        
-        # We want to maximize utility, so we minimize its negative
-        loss = -compute_utility_fn(p_t, lam_t, x_proj)
+
+        loss = -compute_utility_fn(p_t, lam_t, x)
         
         loss.backward()
+        # print(f"[mean_opt step {it}] x.grad exists={x.grad is not None}")
         optimizer.step()
 
-        # After the optimizer step, project x back into the feasible set
+        # After the optimizer takes a step (which may move x outside the
+        # feasible set), we project it back. This is the correct implementation
+        # of Projected Gradient Ascent.
         with torch.no_grad():
             x.data = project_fn(x.data, S)
+        # --- FIX END ---
 
-        if verbose and (it % 100 == 0):
-            print(f"[mean_opt] iter {it}/{steps}, utility={-loss.item():.6f}")
+        # if verbose and (it % 100 == 0):
+        #     print(f"[mean_opt] iter {it}/{steps}, utility={-loss.item():.6f}")
 
-    # Return the final optimized and projected policy
+    # Return the final optimized policy. One last projection ensures constraints are met.
     x_opt = project_fn(x, S).detach().cpu().numpy()
+    # print(f"\n[mean_opt_plug_in] FINAL: x_opt.sum={x_opt.sum():.6f}, x_opt.mean={x_opt.mean():.6f}\n")
     return x_opt
+
+# def mean_opt_plug_in(
+#     p_bar: np.ndarray,
+#     lambda_bar: float,
+#     S: float,
+#     compute_utility_fn: Callable,
+#     project_fn: Callable,
+#     M: int,
+#     lr: float = 5e-3,
+#     steps: int = 600,
+#     device: str = "cpu",
+# ):
+#     device_t = torch.device(device)
+    
+#     # Initialize x as unconstrained variable
+#     x = torch.full((M,), S/M, dtype=torch.float32, device=device_t, requires_grad=True)
+#     optimizer = optim.Adam([x], lr=lr, betas=(0.9, 0.999))
+    
+#     p_t = torch.from_numpy(p_bar).to(device_t)
+#     lam_t = torch.tensor(lambda_bar, dtype=torch.float32, device=device_t)
+    
+#     best_util = -float('inf')
+#     best_x = None
+    
+#     for it in range(steps):
+#         optimizer.zero_grad()
+        
+#         # OPTION A: Project inside loss computation
+#         x_proj = project_fn(x, S)  # Keep gradient flow!
+        
+#         # OPTION B: Clamp to [0,1] but let sum float
+#         x_clamped = torch.clamp(x, 0.0, 1.0)
+        
+#         # Use constrained x
+#         u = compute_utility_fn(p_t, lam_t, x_clamped)
+#         loss = -u
+        
+#         loss.backward()
+#         optimizer.step()
+        
+#         # Track best
+#         if u.item() > best_util:
+#             best_util = u.item()
+#             best_x = x_clamped.clone()
+        
+#         # if it % 100 == 0:
+#             # print(f"Step {it}: utility={u.item():.6f}, sum={x_clamped.sum():.4f}")
+    
+#     # Final projection on best solution
+#     if best_x is not None:
+#         x_opt = project_fn(best_x, S)
+#     else:
+#         x_opt = project_fn(x, S)
+    
+#     return x_opt.detach().cpu().numpy()
+
 
 def plugin_mean_policy(q: np.ndarray, env_pool: Tuple[np.ndarray, np.ndarray], compute_utility_fn: Callable, S: float, project_fn: Callable, M: int, rng: np.random.Generator, device: str) -> np.ndarray:
     """

@@ -7,7 +7,6 @@ import torch.nn as nn
 from typing import Callable, Iterable, List, Optional, Sequence, Tuple, Dict, Union
 
 from src.losses import project_capped_simplex
-from src.utils import get_device
 
 # --- Tail metrics for loss right-tail (alpha=0.95) ---
 def loss_tail_metrics(losses: np.ndarray, alpha: float = 0.95) -> dict:
@@ -45,8 +44,6 @@ def evaluate_model(
     Evaluates the model, returns performance metrics and inference times.
     Now, inference times are added directly to the metrics dictionary.
     """
-    device = get_device(False)
-    model.to(device)
     policy_results = []
     inference_times = []
     pool_size = len(env_pool_list)

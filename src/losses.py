@@ -158,7 +158,7 @@ def _Q_torch_safe(z: torch.Tensor, eps: float = 1e-12) -> torch.Tensor:
 def p_succ_alpha4(
     lam_i: torch.Tensor,
     lam_I: torch.Tensor,
-    theta: float = 10.0,
+    theta: float,
     P_t: float = 1.0,
     N0: float = 1e-9,
     mu: float = 1.0,
@@ -193,11 +193,30 @@ def p_succ_alpha4(
     P_succ = torch.exp(log_P_succ)
     return torch.clamp(P_succ, min=0.0, max=1.0)
 
+def p_succ_alpha4_simple(
+    lam_i: torch.Tensor,      # (M,) or (B,L,M) or (B,M)
+    lam_I: torch.Tensor,      # scalar or compatible shape
+    theta: float = 1.0,       # SINR threshold
+    P_t: float = 1.0,         # Transmit power (not used in interference-limited)
+    N0: float = 1e-9,         # Noise power (not used in interference-limited)
+    mu: float = 1.0,          # Fading parameter (not used in interference-limited)
+    eps: float = 1e-12
+) -> torch.Tensor:
+    
+    # Compute rho(theta, 4)
+    theta_t = torch.tensor(float(theta), dtype=lam_i.dtype, device=lam_i.device)
+    rho = rho_theta_alpha4(theta_t)  # scalar
+    
+    # P_succ = λ_i / (λ_i + λ_I * rho)
+    denominator = lam_i + lam_I * rho + eps  # eps for numerical stability
+    P_succ = lam_i / denominator
+    
+    # Clamp to valid probability range
+    return torch.clamp(P_succ, min=0.0, max=1.0)
+
 # ----------------------------
 # Utility evaluation from a single x and many env samples
 # ----------------------------
-# Add this new function to src/losses.py
-
 def single_utility_from_env(
     p: torch.Tensor,           # (M,)
     lam: torch.Tensor,         # scalar
@@ -220,15 +239,30 @@ def single_utility_from_env(
     if not torch.is_tensor(lam):
         lam = torch.tensor(lam, dtype=dtype, device=device)
 
+    # # DEBUG: Check input shapes
+    # print(f"[single_utility_from_env DEBUG]")
+    # print(f"  p.shape={p.shape}, p.min={p.min():.6f}, p.max={p.max():.6f}, p.sum={p.sum():.6f}")
+    # print(f"  lam={lam.item():.6f}")
+    # print(f"  x.shape={x.shape}, x.min={x.min():.6f}, x.max={x.max():.6f}, x.sum={x.sum():.6f}")
+    
     # Calculate per-file success probabilities
     lam_i = lam * x
     lam_I = lam * lambda_I_factor
     
+    # print(f"  lam_i.min={lam_i.min():.6f}, lam_i.max={lam_i.max():.6f}")
+    # print(f"  lam_I={lam_I.item():.6f}")
+    
     # lam_I is a scalar, needs to be expanded for p_succ_alpha4
-    P_succ = p_succ_alpha4(lam_i, lam_I.expand_as(lam_i), theta, P_t, N0, mu)
+    P_succ = p_succ_alpha4_simple(lam_i, lam_I.expand_as(lam_i), theta, P_t, N0, mu)
+    
+    # print(f"  P_succ.min={P_succ.min():.6f}, P_succ.max={P_succ.max():.6f}")
+    # print(f"  P_succ.mean={P_succ.mean():.6f}")
     
     # Compute final utility
     U = torch.sum(p * P_succ)
+    
+    # print(f"  *** FINAL U = {U.item():.6f} ***\n")
+    
     return torch.clamp(U, 0.0, 1.0)
 
 def utility_from_env_samples(
@@ -289,6 +323,9 @@ def utility_from_env_samples(
     # ensure numerical safety
     U = torch.clamp(U, 0.0, 1.0)
     return U
+
+
+import torch
 
 def batch_utility_from_env_samples(
     p_samples: torch.Tensor,   # (B, L, M)
@@ -369,8 +406,8 @@ def solve_t_star_bisection(
     ell: torch.Tensor,
     gamma: float,
     tau: float,
-    tol: float = 1e-6,
-    max_iter: int = 60
+    tol: float = 1e-4,
+    max_iter: int = 40
 ) -> torch.Tensor:
     """
     Solve for t* that satisfies: 1 = (1/(gamma L)) * sum_{s} sigma_tau(ell_s - t)
@@ -460,7 +497,7 @@ def smoothed_cvar_loss_from_utilities(
 
     # solve t* per row
     t_star = solve_t_star_bisection(ell, gamma=gamma, tau=tau, tol=tol, max_iter=max_iter)  # shape (B,)
-    t_star = t_star.detach() 
+
     # CRITICAL FIX: Use F.softplus(z, beta=tau) which correctly implements
     # (1/tau) * log(1 + exp(tau * z)).
     t_star_col = t_star.view(-1, 1)

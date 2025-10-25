@@ -377,11 +377,14 @@ def plot_training_curves(results_folder='results', smoothing_window=10):
     """
     method_linestyles = {
         "RL2O-CVaR": "--",
-        "Plug-in Mean-Opt": ":",
+        # "Plug-in Mean-Opt": ":",
         "Popularity Heuristic (Top-S)": "-."
     }
     color_palette = ['red', 'green', 'blue', 'orange']
 
+    experiments = [
+        {"label": "W (Measurement Budget)", "folders": ["exp3_W=20","exp3_W=100",], "gamma": None},
+    ]
     for experiment in experiments:
         # give a bit more width; we’ll place legend outside on the right
         fig, ax1 = plt.subplots(figsize=(14, 7))
@@ -427,7 +430,7 @@ def plot_training_curves(results_folder='results', smoothing_window=10):
         # keep tight layout but leave room for the external legend + suptitle
         fig.tight_layout(rect=[0, 0.03, 0.82, 0.95])
 
-        plot_filename = f"figures/9_Training_Curves_{experiment_label}.png"
+        plot_filename = f"figures/10_Training_Curves_{experiment_label}.png"
         # ensure the external legend isn’t clipped
         plt.savefig(plot_filename, dpi=200, bbox_inches='tight')
         plt.close(fig)

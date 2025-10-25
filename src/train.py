@@ -35,8 +35,19 @@ from src.eval import mean_opt_plug_in, plugin_mean_policy, popularity_determinis
 from src.model_eval import evaluate_all_policies
 from src.utils import to_torch, append_row_csv as append_log
 
+# Project utils assumed in losses.py
 from src.losses import single_utility_from_env, smoothed_cvar_loss_from_utilities, project_capped_simplex, utility_from_env_samples
+# from src.model import create_mlp
+# from src.env_pool import build_env_pool
+# from src.eval import evaluate_policy_batch  # optional
 
+# If your project structure differs, adapt the imports above accordingly.
+
+
+# -------------------------
+# Helpers and small utils
+# -------------------------
+# Removed unused sigmoid_tau helper.
 
 
 # -------------------------
@@ -49,7 +60,7 @@ class TrainConfig:
     L: int = 500                # number of posterior draws per measurement
     batch_size: int = 16
     gamma_tail: float = 0.05    # CVaR level (e.g., 0.05)
-    tau: float = 10           # softplus sharpness (CRITICAL FIX: Changed from 5 to 20)
+    tau: float = 20.0           # softplus sharpness (CRITICAL FIX: Changed from 5 to 20)
     epochs: int = 100
     lr: float = 1e-3
     weight_decay: float = 1e-4
@@ -170,13 +181,12 @@ def train_loop(
             U = compute_utility_fn(
                 p_samples=p_batch,      # (B, L, M)
                 lam_samples=lam_batch,  # (B, L)
-                x=x,                    # (B, M)
+                x=x                     # (B, M)
+                # pass P_t, N0, mu, lambda_I_factor from config if you have them there
             )
 
             # (4) Compute CVaR loss from utilities
             loss, _ = smoothed_cvar_loss_from_utilities(U, gamma=config.gamma_tail, tau=config.tau)
-
-            # loss = loss.detach()
 
             # (5) Backprop, clip, step
             loss.backward()
@@ -200,24 +210,33 @@ def train_loop(
             # --- EFFICIENT FIX: Pre-compute the Plug-in Mean-Opt policy ONCE ---
             p_bar_global = p_pool.mean(axis=0)
             lambda_bar_global = float(lam_pool.mean())
-
-            x_opt_mean_plugin = mean_opt_plug_in(
-                p_bar=p_bar_global,
-                lambda_bar=lambda_bar_global,
-                S=S,
-                compute_utility_fn=single_utility_from_env, # Use the new function
-                project_fn=project_fn,
-                M=M,
-                device=device,
-                verbose=False # Keep this off for cleaner logs
-            )
+            
+            # x_opt_mean_plugin = mean_opt_plug_in(
+            #     p_bar= q[:M],
+            #     lambda_bar=lambda_bar_global,
+            #     S=S,
+            #     compute_utility_fn=utility_from_env_samples,
+            #     project_fn=project_fn,
+            #     M=M,
+            #     device=device,
+            #     verbose=False # Keep this off for cleaner logs
+            # )
 
             # --- Define all policies for evaluation ---
             policies_to_evaluate = {
                 "RL2O-CVaR": model,
                 
                 # Now, the lambda just returns the pre-computed policy
-                "Plug-in Mean-Opt": lambda q: x_opt_mean_plugin,
+                "Plug-in Mean-Opt": lambda q:  mean_opt_plug_in(
+                    p_bar=p_bar_global,  # <-- USE GLOBAL POSTERIOR MEAN
+                    lambda_bar=lambda_bar_global,
+                    S=int(round(S)),
+                    compute_utility_fn=single_utility_from_env,
+                    project_fn=project_fn,
+                    M=M,
+                    device=device,
+                    verbose=False
+                ),
 
                 "Popularity Heuristic (Top-S)": lambda q: popularity_deterministic_topS(
                     p_bar=q[:M], # Assumes q[:M] is the popularity estimate
@@ -231,7 +250,7 @@ def train_loop(
                 val_dataset_q=val_dataset_q,
                 env_pool_list=list(zip(p_pool, lam_pool)),
                 project_fn=project_fn,
-                compute_utility_fn=single_utility_from_env,
+                compute_utility_fn=utility_from_env_samples,
                 S=S,
                 gamma=config.gamma_tail,
                 device=torch.device(device),
