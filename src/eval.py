@@ -335,115 +335,110 @@ def popularity_proportional(p_bar: np.ndarray, S: float) -> np.ndarray:
 #     x_opt = project_fn(x, S).detach().cpu().numpy()
 #     return x_opt
 
+# def mean_opt_plug_in(
+#     p_bar: np.ndarray,
+#     lambda_bar: float,
+#     S: float,
+#     compute_utility_fn: Callable[[torch.Tensor, float, torch.Tensor], float],
+#     project_fn: Callable[[torch.Tensor, float], torch.Tensor],
+#     M: int,
+#     lr: float = 1e-2,
+#     steps: int = 400,
+#     device: str = "cpu",
+#     verbose: bool = False
+# ) -> np.ndarray:
+#     """
+#     Compute plug-in mean-opt policy by maximizing expected utility under posterior mean parameters (p_bar, lambda_bar).
+#     We use projected gradient ascent implemented with PyTorch autograd.
+#     """
+#     # **BUG FIX**: Handle the zero-capacity edge case
+#     if S <= 1e-9:
+#         return np.zeros(M, dtype=np.float32)
+
+#     device_t = torch.device(device)
+    
+#     # Initialize x as a parameter for the optimizer
+#     x = torch.full((M,), float(S) / M, dtype=torch.float32, device=device_t, requires_grad=True)
+    
+#     optimizer = optim.SGD([x], lr=lr)
+
+#     p_t = torch.from_numpy(p_bar.astype(np.float32)).to(device_t)
+#     lam_t = torch.tensor(float(lambda_bar), dtype=torch.float32, device=device_t)
+
+#     for it in range(steps):
+#         optimizer.zero_grad()
+        
+
+#         loss = -compute_utility_fn(p_t, lam_t, x)
+        
+#         loss.backward()
+#         # print(f"[mean_opt step {it}] x.grad exists={x.grad is not None}")
+#         optimizer.step()
+
+#         # After the optimizer takes a step (which may move x outside the
+#         # feasible set), we project it back. This is the correct implementation
+#         # of Projected Gradient Ascent.
+#         with torch.no_grad():
+#             x.data = project_fn(x.data, S)
+#         # --- FIX END ---
+
+#         # if verbose and (it % 100 == 0):
+#         #     print(f"[mean_opt] iter {it}/{steps}, utility={-loss.item():.6f}")
+
+#     # Return the final optimized policy. One last projection ensures constraints are met.
+#     x_opt = project_fn(x, S).detach().cpu().numpy()
+#     # print(f"\n[mean_opt_plug_in] FINAL: x_opt.sum={x_opt.sum():.6f}, x_opt.mean={x_opt.mean():.6f}\n")
+#     return x_opt
+
 def mean_opt_plug_in(
     p_bar: np.ndarray,
     lambda_bar: float,
     S: float,
-    compute_utility_fn: Callable[[torch.Tensor, float, torch.Tensor], float],
-    project_fn: Callable[[torch.Tensor, float], torch.Tensor],
+    compute_utility_fn: Callable,
+    project_fn: Callable,
     M: int,
-    lr: float = 1e-2,
+    lr: float = 0.05,  # ✅ Increased from 1e-2
     steps: int = 400,
     device: str = "cpu",
     verbose: bool = False
 ) -> np.ndarray:
-    """
-    Compute plug-in mean-opt policy by maximizing expected utility under posterior mean parameters (p_bar, lambda_bar).
-    We use projected gradient ascent implemented with PyTorch autograd.
-    """
-    # **BUG FIX**: Handle the zero-capacity edge case
     if S <= 1e-9:
         return np.zeros(M, dtype=np.float32)
 
     device_t = torch.device(device)
     
-    # Initialize x as a parameter for the optimizer
-    x = torch.full((M,), float(S) / M, dtype=torch.float32, device=device_t, requires_grad=True)
+    # ✅ SMART INITIALIZATION
+    x_init = torch.from_numpy((p_bar * S).astype(np.float32)).to(device_t)
+    x_init = torch.clamp(x_init, 0.0, 1.0)
+    x_init = project_fn(x_init, S)
+    x = x_init.clone().requires_grad_(True)
     
-    optimizer = optim.SGD([x], lr=lr)
-
+    # ✅ USE ADAM
+    optimizer = optim.Adam([x], lr=lr)
+    
     p_t = torch.from_numpy(p_bar.astype(np.float32)).to(device_t)
     lam_t = torch.tensor(float(lambda_bar), dtype=torch.float32, device=device_t)
-
+    
     for it in range(steps):
         optimizer.zero_grad()
-        
-
         loss = -compute_utility_fn(p_t, lam_t, x)
-        
         loss.backward()
-        # print(f"[mean_opt step {it}] x.grad exists={x.grad is not None}")
+        
+        # ✅ GRADIENT HEALTH CHECK
+        if x.grad is not None and torch.isnan(x.grad).any():
+            print(f"[ERROR] NaN gradients at step {it}")
+            break
+            
         optimizer.step()
-
-        # After the optimizer takes a step (which may move x outside the
-        # feasible set), we project it back. This is the correct implementation
-        # of Projected Gradient Ascent.
+        
         with torch.no_grad():
             x.data = project_fn(x.data, S)
-        # --- FIX END ---
-
-        # if verbose and (it % 100 == 0):
-        #     print(f"[mean_opt] iter {it}/{steps}, utility={-loss.item():.6f}")
-
-    # Return the final optimized policy. One last projection ensures constraints are met.
+        
+        if verbose and (it % 100 == 0):
+            print(f"[mean_opt] iter {it}/{steps}, utility={-loss.item():.6f}")
+    
     x_opt = project_fn(x, S).detach().cpu().numpy()
-    # print(f"\n[mean_opt_plug_in] FINAL: x_opt.sum={x_opt.sum():.6f}, x_opt.mean={x_opt.mean():.6f}\n")
     return x_opt
-
-# def mean_opt_plug_in(
-#     p_bar: np.ndarray,
-#     lambda_bar: float,
-#     S: float,
-#     compute_utility_fn: Callable,
-#     project_fn: Callable,
-#     M: int,
-#     lr: float = 5e-3,
-#     steps: int = 600,
-#     device: str = "cpu",
-# ):
-#     device_t = torch.device(device)
-    
-#     # Initialize x as unconstrained variable
-#     x = torch.full((M,), S/M, dtype=torch.float32, device=device_t, requires_grad=True)
-#     optimizer = optim.Adam([x], lr=lr, betas=(0.9, 0.999))
-    
-#     p_t = torch.from_numpy(p_bar).to(device_t)
-#     lam_t = torch.tensor(lambda_bar, dtype=torch.float32, device=device_t)
-    
-#     best_util = -float('inf')
-#     best_x = None
-    
-#     for it in range(steps):
-#         optimizer.zero_grad()
-        
-#         # OPTION A: Project inside loss computation
-#         x_proj = project_fn(x, S)  # Keep gradient flow!
-        
-#         # OPTION B: Clamp to [0,1] but let sum float
-#         x_clamped = torch.clamp(x, 0.0, 1.0)
-        
-#         # Use constrained x
-#         u = compute_utility_fn(p_t, lam_t, x_clamped)
-#         loss = -u
-        
-#         loss.backward()
-#         optimizer.step()
-        
-#         # Track best
-#         if u.item() > best_util:
-#             best_util = u.item()
-#             best_x = x_clamped.clone()
-        
-#         # if it % 100 == 0:
-#             # print(f"Step {it}: utility={u.item():.6f}, sum={x_clamped.sum():.4f}")
-    
-#     # Final projection on best solution
-#     if best_x is not None:
-#         x_opt = project_fn(best_x, S)
-#     else:
-#         x_opt = project_fn(x, S)
-    
-#     return x_opt.detach().cpu().numpy()
 
 
 def plugin_mean_policy(q: np.ndarray, env_pool: Tuple[np.ndarray, np.ndarray], compute_utility_fn: Callable, S: float, project_fn: Callable, M: int, rng: np.random.Generator, device: str) -> np.ndarray:

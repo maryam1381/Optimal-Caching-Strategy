@@ -1,452 +1,518 @@
-import pandas as pd
 import matplotlib.pyplot as plt
-import re
-import os  # os is used for checking if files exist
-import seaborn as sns
-import re
+import pandas as pd
 import glob
-import numpy as np
-from scipy.stats import cumfreq
+import os
 
-
-# Define the experiments and their respective labels
-experiments = [
+def plot_training_curves(results_folder='results', smoothing_window=10):
+    """
+    Plots training loss (CVaR objective) for each experiment.
+    - Smoothed empirical CVaR objective vs. training epoch.
+    :param results_folder: Path to the folder where experiment results are saved.
+    :param smoothing_window: The window size for the rolling average of the training loss.
+    """
+    # Define experiment configurations
+    experiments = [
         {"label": "Gamma_r", "folders": ["exp1_gamma_r=0.6", "exp1_gamma_r=1.0", "exp1_gamma_r=1.5", "exp1_gamma_r=2.0"], "gamma": None},
         {"label": "Lambda", "folders": ["exp2_lambda_true=0.5", "exp2_lambda_true=1.5", "exp2_lambda_true=5.0"], "gamma": None},
         {"label": "W (Measurement Budget)", "folders": ["exp3_W=100", "exp3_W=20", "exp3_W=500"], "gamma": None},
         {"label": "L (Sample Size)", "folders": ["exp4_L=128", "exp4_L=256", "exp4_L=64"], "gamma": None},
     ]
 
-def compute_cvar(losses, gamma):
-    sorted_losses = np.sort(losses)
-    k = int(np.ceil(gamma * len(sorted_losses)))
-    cvar = np.mean(sorted_losses[-k:])
-    return cvar
-
-def Utility_CDFs(results_folder):
-    if not os.path.exists("figures"):
-        os.makedirs("figures")
-
     for experiment in experiments:
-        fig, ax = plt.subplots(figsize=(7, 5))
-        experiment_label = experiment["label"]
-        first_cvar = True
-
-        for folder in experiment["folders"]:
-            folder_path = os.path.join(results_folder, folder, "checkpoints")
-            file_paths = [os.path.join(folder_path, f)
-                          for f in os.listdir(folder_path) if f.startswith('TRAIN')]
-
-            for file_path in file_paths:
-                df = pd.read_csv(file_path)
-
-                # ✅ FIX: use real utility column instead of 1 - loss
-                util_col = None
-                for c in df.columns:
-                    if 'mean_utility_mean_' in c:
-                        util_col = c
-                        break
-                if util_col is None:
-                    continue
-                utility = df[util_col].to_numpy()
-                sorted_utility = np.sort(utility)
-                cdf = np.cumsum(np.ones_like(sorted_utility)) / len(sorted_utility)
-
-                line = ax.plot(sorted_utility, cdf, label=f'{folder} - CDF', linewidth=2)[0]
-                color = line.get_color()
-
-                # ✅ FIX: CVaR line plotted as 1 - CVaR(loss)
-                if 'CVaR_0.05_RL2O-CVaR' in df.columns:
-                    cvar_loss = float(df['CVaR_0.05_RL2O-CVaR'].iloc[-1])
-                    cvar_util = np.clip(1.0 - cvar_loss, 0.0, 1.0)
-                    ax.axvline(
-                        x=cvar_util,
-                        color=color, linestyle='--',
-                        label='CVaR (γ=0.05)' if first_cvar else '_nolegend_'
-                    )
-                    first_cvar = False
-
-                # Median line
-                ax.axvline(x=np.median(sorted_utility), color=color, linestyle=':', label='Median')
-
-        ax.set_title(f'{experiment_label} - Utility CDFs')
-        ax.set_xlabel('Utility')
-        ax.set_ylabel('CDF')
-        ax.legend()
-        fig.savefig(f"figures/1_Utility_CDF_{experiment_label}.png")
-        plt.close(fig)
-
-    print("Utility CDF plots saved.")
-
-
-def Mean_vs_CVaR_tradeoff_scatter(results_folder):
-    """
-    Draw 4 scatter plots for the tradeoff between mean utility and CVaR for different experiments (gamma_r, lambda, W, L).
-    Each plot will show the relationship between mean utility and CVaR.
-    :param results_folder: Path to the folder where results of the experiments are saved.
-    """
-    # Ensure the "figures" folder exists
-    if not os.path.exists("figures"):
-        os.makedirs("figures")
-
-    for experiment in experiments:
-        fig, ax = plt.subplots(figsize=(7, 5))
-        experiment_label = experiment["label"]
-
-        for folder in experiment["folders"]:
-            folder_path = os.path.join(results_folder, folder, "checkpoints")
-            file_paths = [os.path.join(folder_path, f)
-                          for f in os.listdir(folder_path) if f.startswith('TRAIN')]
-
-            for file_path in file_paths:
-                df = pd.read_csv(file_path)
-                if 'mean_utility_mean_RL2O-CVaR' in df.columns and 'CVaR_0.05_RL2O-CVaR' in df.columns:
-                    util = float(df['mean_utility_mean_RL2O-CVaR'].iloc[-1])
-                    cvar = float(df['CVaR_0.05_RL2O-CVaR'].iloc[-1])
-                    ax.scatter(util, cvar, label=f'{folder}', alpha=0.7)
-
-        ax.set_title(f'{experiment_label} - Mean vs CVaR Tradeoff')
-        ax.set_xlabel('Mean Utility')
-        ax.set_ylabel('CVaR (γ=0.05)')
-        ax.legend()
-        fig.savefig(f"figures/2_Mean_vs_CVaR_{experiment_label}.png")
-        plt.close(fig)
-
-    print("Mean vs CVaR scatter plots saved.")
-
-def plot_cvar_vs_w(results_folder):
-    """
-    Draw the plot of CVaR vs Measurement Budget (W) for different methods.
-    :param results_folder: Path to the folder where results of the experiments are saved.
-    """    
-    # Store data for the CVaR vs W plot
-    cvar_vs_w_data = []
-
-    for experiment in experiments:
-        for folder in experiment["folders"]:
-            folder_path = os.path.join(results_folder, folder, "checkpoints")
-            file_paths = [os.path.join(folder_path, f) for f in os.listdir(folder_path) if f.startswith('TRAIN')]
-
-            for file_path in file_paths:
-                df = pd.read_csv(file_path)
-
-                loss = df['loss_train_mean']
-
-                # For "exp3_W" folder, extract the W value from the folder name
-                if "exp3_W" in folder:
-                    W_value = int(folder.split('=')[-1])  
-
-                    # Compute CVaR for the losses (assuming gamma=0.05 for CVaR)
-                    cvar = compute_cvar(loss, 0.05)
-
-                    # Collect data for CVaR vs W plot
-                    cvar_vs_w_data.append({"method": folder, "W": W_value, "CVaR": cvar})
-
-    # Plot CVaR vs W
-    cvar_vs_w_df = pd.DataFrame(cvar_vs_w_data)
-    plt.figure(figsize=(8, 6))
-    sns.lineplot(data=cvar_vs_w_df, x='W', y='CVaR', hue='method', marker="o")
-    plt.title("CVaR vs Measurement Budget (W)")
-    plt.xlabel("Measurement Budget (W)")
-    plt.ylabel("CVaR (gamma=0.05)")
-    plt.legend()
-    
-    # Save the plot to the "figures" folder
-    if not os.path.exists("figures"):
-        os.makedirs("figures")
-    
-    plt.savefig("figures/3_CVaR_vs_W.png")
-    plt.close()  # Close the plot after saving
-    print("CVaR vs Measurement Budget (W) plot has been saved in the 'figures' folder.")
-
-def plot_loss_distribution_sorted(results_folder):
-    """
-    Draw separate Boxplots / Violin plots of loss distribution for the 4 experiments (Gamma_r, Lambda, W, L),
-    sorted by their respective values (L, W, Lambda).
-    Save each plot separately with unique filenames.
-    
-    :param results_folder: Path to the folder where results of the experiments are saved.
-    """    
-    # Ensure the "figures" folder exists
-    if not os.path.exists("figures"):
-        os.makedirs("figures")
-    
-    # Process each experiment
-    for experiment in experiments:
-        loss_distribution_data = []
-
-        for folder in experiment["folders"]:
-            folder_path = os.path.join(results_folder, folder, "checkpoints")
-            file_paths = [os.path.join(folder_path, f) for f in os.listdir(folder_path) if f.startswith('TRAIN')]
-
-            for file_path in file_paths:
-                # Read the CSV file
-                df = pd.read_csv(file_path)
-
-                # Extract loss data and method for the plot
-                loss = df['loss_train_mean']  # Use the correct column name for the loss
-                method = folder.split('=')[-1]  # Extract method name (e.g., "gamma_r=0.6", "Lambda=1.5", etc.)
-
-                for l in loss:
-                    loss_distribution_data.append({"method": method, "loss": l})
-        
-        # Convert data to DataFrame
-        loss_distribution_df = pd.DataFrame(loss_distribution_data)
-        
-        # Sort the methods based on the relevant values (Lambda, L, W)
-        if experiment['label'] == "Gamma_r":
-            sorted_methods = sorted(loss_distribution_df['method'].unique(), key=lambda x: float(x.split('=')[-1]))
-        elif experiment['label'] == "Lambda":
-            sorted_methods = sorted(loss_distribution_df['method'].unique(), key=lambda x: float(x.split('=')[-1]))
-        elif experiment['label'] == "W (Measurement Budget)":
-            sorted_methods = sorted(loss_distribution_df['method'].unique(), key=lambda x: int(x.split('=')[-1]))
-        elif experiment['label'] == "L (Sample Size)":
-            sorted_methods = sorted(loss_distribution_df['method'].unique(), key=lambda x: int(x.split('=')[-1]))
-
-        # Sort DataFrame based on the sorted methods
-        loss_distribution_df['method'] = pd.Categorical(loss_distribution_df['method'], categories=sorted_methods, ordered=True)
-        loss_distribution_df = loss_distribution_df.sort_values('method')
-        
-        # Plot the Boxplots / Violin of Loss Distribution
-        plt.figure(figsize=(8, 6))
-        sns.boxplot(x='method', y='loss', data=loss_distribution_df, hue='method', palette="Set2", legend=False)
-        plt.title(f"Boxplots / Violin of Loss Distribution for {experiment['label']}")
-        plt.xlabel("Method")
-        plt.ylabel("Loss")
-        
-        # Save the plot to the "figures" folder with unique filenames
-        plot_filename = f"figures/4_Loss_Distribution_Sorted_{experiment['label']}.png"
-        plt.savefig(plot_filename)
-        plt.close()  # Close the plot after saving
-        
-        print(f"Loss Distribution plot for {experiment['label']} has been saved as {plot_filename}.")
-
-
-def compute_zipf_exponent(popularity_values):
-    """
-    Estimate the Zipf exponent based on popularity values using a logarithmic fit.
-    :param popularity_values: List or array of popularity values.
-    :return: Estimated Zipf exponent.
-    """
-    # Ensure popularity_values are numeric (convert if necessary)
-    popularity_values = np.array(popularity_values, dtype=np.float64)
-    
-    # Remove any non-positive values, since log(0) is undefined and log of negative numbers is complex
-    popularity_values = popularity_values[popularity_values > 0]
-    
-    # Check if there are enough values to calculate
-    if len(popularity_values) < 2:
-        raise ValueError("Not enough positive popularity values to compute Zipf exponent.")
-    
-    ranks = np.arange(1, len(popularity_values) + 1)
-    log_ranks = np.log(ranks)
-    log_popularity = np.log(popularity_values)
-    
-    # Fit a line to log(ranks) vs log(popularity)
-    slope, intercept = np.polyfit(log_ranks, log_popularity, 1)
-    return -slope  # The exponent is the negative slope
-
-
-def plot_performance_vs_zipf(results_folder, gamma_values=[0.6, 1.0, 1.5, 2.0]): # heat map 
-    """
-    Draw Performance vs Zipf Exponent plot for CVaR and Mean Utility for each gamma value.
-    :param results_folder: Path to the folder where results of the experiments are saved.
-    :param gamma_values: List of gamma values to use for experiments (default: [0.6, 1.0, 1.5, 2.0]).
-    """
-    # Define the experiment folders for exp1 (gamma_r)
-    experiment_folders = [f"exp1_gamma_r={gamma}" for gamma in gamma_values]
-
-    # Store results for plotting
-    zipf_exponent_data = []
-
-    for folder in experiment_folders:
-        folder_path = os.path.join(results_folder, folder, "checkpoints")
-        file_paths = [os.path.join(folder_path, f) for f in os.listdir(folder_path) if f.startswith('TRAIN')]
-
-        for file_path in file_paths:
-            # Read the CSV file
-            df = pd.read_csv(file_path)
-
-            # Extract loss and utility data
-            loss = df['loss_train_mean']
-            utility = df['mean_utility_mean_RL2O-CVaR']
-            
-            # Compute CVaR for the losses (assuming gamma=0.05 for CVaR)
-            cvar = compute_cvar(loss, 0.05)
-            
-            # Compute Zipf exponent from the utility distribution
-            zipf_exponent = compute_zipf_exponent(utility)
-            
-            # Collect data for the heatmap
-            zipf_exponent_data.append({"method": folder, "zipf_exponent": zipf_exponent, "cvar": cvar, "mean_utility": np.mean(utility)})
-
-    # Convert data to DataFrame
-    zipf_exponent_df = pd.DataFrame(zipf_exponent_data)
-
-    # Plotting the CVaR vs Zipf Exponent
-    plt.figure(figsize=(10, 7))
-
-    # Create heatmap for CVaR
-    pivot_cvar = zipf_exponent_df.pivot(index="method", columns="zipf_exponent", values="cvar")
-    sns.heatmap(pivot_cvar, cmap="YlGnBu", annot=True, fmt=".2f", linewidths=0.5)
-    plt.title(f"CVaR vs Zipf Exponent for gamma_r values")
-    plt.xlabel("Zipf Exponent")
-    plt.ylabel("Method")
-    plt.tight_layout()
-    
-    # Save the CVaR heatmap
-    if not os.path.exists("figures"):
-        os.makedirs("figures")
-    
-    plt.savefig("figures/6_Performance_vs_Zipf_CVaR.png")
-    plt.close()  # Close the plot after saving
-
-    # Plotting the Mean Utility vs Zipf Exponent
-    plt.figure(figsize=(10, 7))
-
-    # Create heatmap for Mean Utility
-    pivot_utility = zipf_exponent_df.pivot(index="method", columns="zipf_exponent", values="mean_utility")
-    sns.heatmap(pivot_utility, cmap="coolwarm", annot=True, fmt=".2f", linewidths=0.5)
-    plt.title(f"Mean Utility vs Zipf Exponent for gamma_r values")
-    plt.xlabel("Zipf Exponent")
-    plt.ylabel("Method")
-    plt.tight_layout()
-    
-    # Save the Mean Utility heatmap
-    plt.savefig("figures/6_Performance_vs_Zipf_Utility.png")
-    plt.close() 
-
-    print("CVaR and Mean Utility vs Zipf Exponent heatmaps have been saved in the 'figures' folder.")
-
-
-def plot_cvar_vs_l(results_folder):
-    """
-    Draw CVaR vs L (Sample Size) plot for exp4 (L = {64, 128, 256}).
-    :param results_folder: Path to the folder where results of the experiments are saved.
-    """
-    # Define the experiment folders for exp4 (L = {64, 128, 256})
-    experiment_folders = ["exp4_L=64", "exp4_L=128", "exp4_L=256"]
-
-    # Store results for plotting
-    cvar_data = []
-
-    for folder in experiment_folders:
-        folder_path = os.path.join(results_folder, folder, "checkpoints")
-        file_paths = [os.path.join(folder_path, f) for f in os.listdir(folder_path) if f.startswith('TRAIN')]
-
-        for file_path in file_paths:
-            # Read the CSV file
-            df = pd.read_csv(file_path)
-
-            # Extract CVaR_0.05_* data (assuming column names like "CVaR_0.05_RL2O-CVaR")
-            cvar_05 = df['CVaR_0.05_RL2O-CVaR'].values[-1]  # takes final epoch's CVaR (after training)
-            # Collect data for plotting
-            sample_size = int(folder.split('=')[1])  # Extract L value from folder name
-            cvar_data.append({"L": sample_size, "cvar": cvar_05})
-
-    # Convert data to DataFrame
-    cvar_df = pd.DataFrame(cvar_data)
-
-    # Plotting CVaR vs L (Sample Size)
-    plt.figure(figsize=(8, 6))
-    plt.plot(cvar_df['L'], cvar_df['cvar'], marker='o', linestyle='-', color='b')
-    plt.title("CVaR vs Sample Size (L)")
-    plt.xlabel("Sample Size (L)")
-    plt.ylabel("CVaR (gamma=0.05)")
-    plt.grid(True)
-    plt.tight_layout()
-
-    # Save the plot
-    if not os.path.exists("figures"):
-        os.makedirs("figures")
-    
-    plt.savefig("figures/8_CVaR_vs_L.png")
-    plt.close()  # Close the plot after saving
-
-    print("CVaR vs L plot has been saved in the 'figures' folder.")
-
-
-
-def plot_training_curves(results_folder='results', smoothing_window=10):
-    """
-    Plots training and validation CVaR curves for each experiment.
-    - Smoothed empirical CVaR objective vs. training epoch.
-    - Validation CVaR vs. epoch for different methods.
-    :param results_folder: Path to the folder where experiment results are saved.
-    :param smoothing_window: The window size for the rolling average of the training loss.
-    """
-    method_linestyles = {
-        "RL2O-CVaR": "--",
-        # "Plug-in Mean-Opt": ":",
-        "Popularity Heuristic (Top-S)": "-."
-    }
-    color_palette = ['red', 'green', 'blue', 'orange']
-
-    experiments = [
-        {"label": "W (Measurement Budget)", "folders": ["exp3_W=20","exp3_W=100",], "gamma": None},
-    ]
-    for experiment in experiments:
-        # give a bit more width; we’ll place legend outside on the right
+        # Initialize the plot for this experiment
         fig, ax1 = plt.subplots(figsize=(14, 7))
 
-        param_colors = {
-            folder.split('=')[-1]: color_palette[i % len(color_palette)]
-            for i, folder in enumerate(experiment["folders"])
-        }
-        experiment_label = experiment["label"]
-
+        # Iterate through the folders (each representing an experiment variation)
         for folder in experiment["folders"]:
             folder_path = os.path.join(results_folder, folder, "checkpoints")
             file_paths = glob.glob(os.path.join(folder_path, 'TRAIN*.csv'))
+
             if not file_paths:
                 print(f"No training CSV found in {folder_path}")
                 continue
 
+            # Load the CSV file for this experiment
             df = pd.read_csv(file_paths[0])
-            param_value = folder.split('=')[-1]
-            color = param_colors[param_value]
 
-            # Smoothed training loss
+            # Extract the gamma value from the folder name (e.g., "gamma_r=0.6" -> "0.6")
+            gamma_value = folder.split('=')[-1]
+
+            # Smoothed training loss (CVaR objective)
             smoothed_loss = df['loss_train_mean'].rolling(window=smoothing_window, min_periods=1).mean()
-            ax1.plot(df['epoch'], smoothed_loss, '-', color=color,
-                     label=f'Train Loss ({experiment_label}={param_value})', alpha=0.8)
 
-            # Validation CVaR for each method
-            for method, linestyle in method_linestyles.items():
-                cvar_col = f'CVaR_0.05_{method}'
-                if cvar_col in df.columns:
-                    ax1.plot(df['epoch'], df[cvar_col], linestyle=linestyle, color=color,
-                             label=f'Val CVaR ({method}, {param_value})')
+            # Plot the training loss curve with a unique label for each gamma_r
+            ax1.plot(df['epoch'], smoothed_loss, label=f"Train Loss (Gamma_r={gamma_value})", linewidth=2)
 
-        ax1.set_xlabel('Epoch')
-        ax1.set_ylabel('CVaR / Smoothed Loss')
-        fig.suptitle(f'Training and Validation CVaR Curves: {experiment_label}', fontsize=16)
+        # Set the plot labels and title
+        ax1.set_xlabel('Epoch', fontsize=14)
+        ax1.set_ylabel('Training Loss (CVaR Objective)', fontsize=14)
+        ax1.set_title(f'Training Loss Curve: {experiment["label"]}', fontsize=16)
 
-        # ---- key change: put legend outside the axes on the right ----
-        handles, labels = ax1.get_legend_handles_labels()
-        ax1.legend(handles, labels, loc='center left', bbox_to_anchor=(1.02, 0.5),
-                   borderaxespad=0., frameon=True, fontsize=9)
+        # Show the legend and adjust layout
+        ax1.legend(loc='upper right', fontsize=12)
+        ax1.grid(True)
 
-        # keep tight layout but leave room for the external legend + suptitle
-        fig.tight_layout(rect=[0, 0.03, 0.82, 0.95])
-
-        plot_filename = f"figures/10_Training_Curves_{experiment_label}.png"
-        # ensure the external legend isn’t clipped
+        # Save the plot to the "figures" folder
+        save_dir = "figures"
+        os.makedirs(save_dir, exist_ok=True)
+        plot_filename = os.path.join(save_dir, f"training_loss_{experiment['label'].replace(' ', '_')}.png")
         plt.savefig(plot_filename, dpi=200, bbox_inches='tight')
         plt.close(fig)
 
-    print("All training curve plots have been saved in the 'figures' folder.")
+        print(f"Training loss plot for {experiment['label']} saved at {plot_filename}")
+
+    print("All training loss plots have been saved in the 'figures' folder.")
 
 
-def generate_plots():
-    Utility_CDFs('results')
-    Mean_vs_CVaR_tradeoff_scatter('results')
-    plot_cvar_vs_w('results')
-    plot_loss_distribution_sorted('results')
-    plot_performance_vs_zipf('results')
-    plot_cvar_vs_l('results')
-    plot_training_curves()
+# import pandas as pd
+# import matplotlib.pyplot as plt
+# import re
+# import os  # os is used for checking if files exist
+# import seaborn as sns
+# import re
+# import glob
+# import numpy as np
+# from scipy.stats import cumfreq
 
 
-# generate_plots()
+# # Define the experiments and their respective labels
+# experiments = [
+#         {"label": "Gamma_r", "folders": ["exp1_gamma_r=0.6", "exp1_gamma_r=1.0", "exp1_gamma_r=1.5", "exp1_gamma_r=2.0"], "gamma": None},
+#         {"label": "Lambda", "folders": ["exp2_lambda_true=0.5", "exp2_lambda_true=1.5", "exp2_lambda_true=5.0"], "gamma": None},
+#         {"label": "W (Measurement Budget)", "folders": ["exp3_W=100", "exp3_W=20", "exp3_W=500"], "gamma": None},
+#         {"label": "L (Sample Size)", "folders": ["exp4_L=128", "exp4_L=256", "exp4_L=64"], "gamma": None},
+#     ]
+
+# def compute_cvar(losses, gamma):
+#     sorted_losses = np.sort(losses)
+#     k = int(np.ceil(gamma * len(sorted_losses)))
+#     cvar = np.mean(sorted_losses[-k:])
+#     return cvar
+
+# def Utility_CDFs(results_folder):
+#     if not os.path.exists("figures"):
+#         os.makedirs("figures")
+
+#     for experiment in experiments:
+#         fig, ax = plt.subplots(figsize=(7, 5))
+#         experiment_label = experiment["label"]
+#         first_cvar = True
+
+#         for folder in experiment["folders"]:
+#             folder_path = os.path.join(results_folder, folder, "checkpoints")
+#             file_paths = [os.path.join(folder_path, f)
+#                           for f in os.listdir(folder_path) if f.startswith('TRAIN')]
+
+#             for file_path in file_paths:
+#                 df = pd.read_csv(file_path)
+
+#                 # ✅ FIX: use real utility column instead of 1 - loss
+#                 util_col = None
+#                 for c in df.columns:
+#                     if 'mean_utility_mean_' in c:
+#                         util_col = c
+#                         break
+#                 if util_col is None:
+#                     continue
+#                 utility = df[util_col].to_numpy()
+#                 sorted_utility = np.sort(utility)
+#                 cdf = np.cumsum(np.ones_like(sorted_utility)) / len(sorted_utility)
+
+#                 line = ax.plot(sorted_utility, cdf, label=f'{folder} - CDF', linewidth=2)[0]
+#                 color = line.get_color()
+
+#                 # ✅ FIX: CVaR line plotted as 1 - CVaR(loss)
+#                 if 'CVaR_0.05_RL2O-CVaR' in df.columns:
+#                     cvar_loss = float(df['CVaR_0.05_RL2O-CVaR'].iloc[-1])
+#                     cvar_util = np.clip(1.0 - cvar_loss, 0.0, 1.0)
+#                     ax.axvline(
+#                         x=cvar_util,
+#                         color=color, linestyle='--',
+#                         label='CVaR (γ=0.05)' if first_cvar else '_nolegend_'
+#                     )
+#                     first_cvar = False
+
+#                 # Median line
+#                 ax.axvline(x=np.median(sorted_utility), color=color, linestyle=':', label='Median')
+
+#         ax.set_title(f'{experiment_label} - Utility CDFs')
+#         ax.set_xlabel('Utility')
+#         ax.set_ylabel('CDF')
+#         ax.legend()
+#         fig.savefig(f"figures/1_Utility_CDF_{experiment_label}.png")
+#         plt.close(fig)
+
+#     print("Utility CDF plots saved.")
+
+
+# def Mean_vs_CVaR_tradeoff_scatter(results_folder):
+#     """
+#     Draw 4 scatter plots for the tradeoff between mean utility and CVaR for different experiments (gamma_r, lambda, W, L).
+#     Each plot will show the relationship between mean utility and CVaR.
+#     :param results_folder: Path to the folder where results of the experiments are saved.
+#     """
+#     # Ensure the "figures" folder exists
+#     if not os.path.exists("figures"):
+#         os.makedirs("figures")
+
+#     for experiment in experiments:
+#         fig, ax = plt.subplots(figsize=(7, 5))
+#         experiment_label = experiment["label"]
+
+#         for folder in experiment["folders"]:
+#             folder_path = os.path.join(results_folder, folder, "checkpoints")
+#             file_paths = [os.path.join(folder_path, f)
+#                           for f in os.listdir(folder_path) if f.startswith('TRAIN')]
+
+#             for file_path in file_paths:
+#                 df = pd.read_csv(file_path)
+#                 if 'mean_utility_mean_RL2O-CVaR' in df.columns and 'CVaR_0.05_RL2O-CVaR' in df.columns:
+#                     util = float(df['mean_utility_mean_RL2O-CVaR'].iloc[-1])
+#                     cvar = float(df['CVaR_0.05_RL2O-CVaR'].iloc[-1])
+#                     ax.scatter(util, cvar, label=f'{folder}', alpha=0.7)
+
+#         ax.set_title(f'{experiment_label} - Mean vs CVaR Tradeoff')
+#         ax.set_xlabel('Mean Utility')
+#         ax.set_ylabel('CVaR (γ=0.05)')
+#         ax.legend()
+#         fig.savefig(f"figures/2_Mean_vs_CVaR_{experiment_label}.png")
+#         plt.close(fig)
+
+#     print("Mean vs CVaR scatter plots saved.")
+
+# def plot_cvar_vs_w(results_folder):
+#     """
+#     Draw the plot of CVaR vs Measurement Budget (W) for different methods.
+#     :param results_folder: Path to the folder where results of the experiments are saved.
+#     """    
+#     # Store data for the CVaR vs W plot
+#     cvar_vs_w_data = []
+
+#     for experiment in experiments:
+#         for folder in experiment["folders"]:
+#             folder_path = os.path.join(results_folder, folder, "checkpoints")
+#             file_paths = [os.path.join(folder_path, f) for f in os.listdir(folder_path) if f.startswith('TRAIN')]
+
+#             for file_path in file_paths:
+#                 df = pd.read_csv(file_path)
+
+#                 loss = df['loss_train_mean']
+
+#                 # For "exp3_W" folder, extract the W value from the folder name
+#                 if "exp3_W" in folder:
+#                     W_value = int(folder.split('=')[-1])  
+
+#                     # Compute CVaR for the losses (assuming gamma=0.05 for CVaR)
+#                     cvar = compute_cvar(loss, 0.05)
+
+#                     # Collect data for CVaR vs W plot
+#                     cvar_vs_w_data.append({"method": folder, "W": W_value, "CVaR": cvar})
+
+#     # Plot CVaR vs W
+#     cvar_vs_w_df = pd.DataFrame(cvar_vs_w_data)
+#     plt.figure(figsize=(8, 6))
+#     sns.lineplot(data=cvar_vs_w_df, x='W', y='CVaR', hue='method', marker="o")
+#     plt.title("CVaR vs Measurement Budget (W)")
+#     plt.xlabel("Measurement Budget (W)")
+#     plt.ylabel("CVaR (gamma=0.05)")
+#     plt.legend()
+    
+#     # Save the plot to the "figures" folder
+#     if not os.path.exists("figures"):
+#         os.makedirs("figures")
+    
+#     plt.savefig("figures/3_CVaR_vs_W.png")
+#     plt.close()  # Close the plot after saving
+#     print("CVaR vs Measurement Budget (W) plot has been saved in the 'figures' folder.")
+
+# def plot_loss_distribution_sorted(results_folder):
+#     """
+#     Draw separate Boxplots / Violin plots of loss distribution for the 4 experiments (Gamma_r, Lambda, W, L),
+#     sorted by their respective values (L, W, Lambda).
+#     Save each plot separately with unique filenames.
+    
+#     :param results_folder: Path to the folder where results of the experiments are saved.
+#     """    
+#     # Ensure the "figures" folder exists
+#     if not os.path.exists("figures"):
+#         os.makedirs("figures")
+    
+#     # Process each experiment
+#     for experiment in experiments:
+#         loss_distribution_data = []
+
+#         for folder in experiment["folders"]:
+#             folder_path = os.path.join(results_folder, folder, "checkpoints")
+#             file_paths = [os.path.join(folder_path, f) for f in os.listdir(folder_path) if f.startswith('TRAIN')]
+
+#             for file_path in file_paths:
+#                 # Read the CSV file
+#                 df = pd.read_csv(file_path)
+
+#                 # Extract loss data and method for the plot
+#                 loss = df['loss_train_mean']  # Use the correct column name for the loss
+#                 method = folder.split('=')[-1]  # Extract method name (e.g., "gamma_r=0.6", "Lambda=1.5", etc.)
+
+#                 for l in loss:
+#                     loss_distribution_data.append({"method": method, "loss": l})
+        
+#         # Convert data to DataFrame
+#         loss_distribution_df = pd.DataFrame(loss_distribution_data)
+        
+#         # Sort the methods based on the relevant values (Lambda, L, W)
+#         if experiment['label'] == "Gamma_r":
+#             sorted_methods = sorted(loss_distribution_df['method'].unique(), key=lambda x: float(x.split('=')[-1]))
+#         elif experiment['label'] == "Lambda":
+#             sorted_methods = sorted(loss_distribution_df['method'].unique(), key=lambda x: float(x.split('=')[-1]))
+#         elif experiment['label'] == "W (Measurement Budget)":
+#             sorted_methods = sorted(loss_distribution_df['method'].unique(), key=lambda x: int(x.split('=')[-1]))
+#         elif experiment['label'] == "L (Sample Size)":
+#             sorted_methods = sorted(loss_distribution_df['method'].unique(), key=lambda x: int(x.split('=')[-1]))
+
+#         # Sort DataFrame based on the sorted methods
+#         loss_distribution_df['method'] = pd.Categorical(loss_distribution_df['method'], categories=sorted_methods, ordered=True)
+#         loss_distribution_df = loss_distribution_df.sort_values('method')
+        
+#         # Plot the Boxplots / Violin of Loss Distribution
+#         plt.figure(figsize=(8, 6))
+#         sns.boxplot(x='method', y='loss', data=loss_distribution_df, hue='method', palette="Set2", legend=False)
+#         plt.title(f"Boxplots / Violin of Loss Distribution for {experiment['label']}")
+#         plt.xlabel("Method")
+#         plt.ylabel("Loss")
+        
+#         # Save the plot to the "figures" folder with unique filenames
+#         plot_filename = f"figures/4_Loss_Distribution_Sorted_{experiment['label']}.png"
+#         plt.savefig(plot_filename)
+#         plt.close()  # Close the plot after saving
+        
+#         print(f"Loss Distribution plot for {experiment['label']} has been saved as {plot_filename}.")
+
+
+# def compute_zipf_exponent(popularity_values):
+#     """
+#     Estimate the Zipf exponent based on popularity values using a logarithmic fit.
+#     :param popularity_values: List or array of popularity values.
+#     :return: Estimated Zipf exponent.
+#     """
+#     # Ensure popularity_values are numeric (convert if necessary)
+#     popularity_values = np.array(popularity_values, dtype=np.float64)
+    
+#     # Remove any non-positive values, since log(0) is undefined and log of negative numbers is complex
+#     popularity_values = popularity_values[popularity_values > 0]
+    
+#     # Check if there are enough values to calculate
+#     if len(popularity_values) < 2:
+#         raise ValueError("Not enough positive popularity values to compute Zipf exponent.")
+    
+#     ranks = np.arange(1, len(popularity_values) + 1)
+#     log_ranks = np.log(ranks)
+#     log_popularity = np.log(popularity_values)
+    
+#     # Fit a line to log(ranks) vs log(popularity)
+#     slope, intercept = np.polyfit(log_ranks, log_popularity, 1)
+#     return -slope  # The exponent is the negative slope
+
+
+# def plot_performance_vs_zipf(results_folder, gamma_values=[0.6, 1.0, 1.5, 2.0]): # heat map 
+#     """
+#     Draw Performance vs Zipf Exponent plot for CVaR and Mean Utility for each gamma value.
+#     :param results_folder: Path to the folder where results of the experiments are saved.
+#     :param gamma_values: List of gamma values to use for experiments (default: [0.6, 1.0, 1.5, 2.0]).
+#     """
+#     # Define the experiment folders for exp1 (gamma_r)
+#     experiment_folders = [f"exp1_gamma_r={gamma}" for gamma in gamma_values]
+
+#     # Store results for plotting
+#     zipf_exponent_data = []
+
+#     for folder in experiment_folders:
+#         folder_path = os.path.join(results_folder, folder, "checkpoints")
+#         file_paths = [os.path.join(folder_path, f) for f in os.listdir(folder_path) if f.startswith('TRAIN')]
+
+#         for file_path in file_paths:
+#             # Read the CSV file
+#             df = pd.read_csv(file_path)
+
+#             # Extract loss and utility data
+#             loss = df['loss_train_mean']
+#             utility = df['mean_utility_mean_RL2O-CVaR']
+            
+#             # Compute CVaR for the losses (assuming gamma=0.05 for CVaR)
+#             cvar = compute_cvar(loss, 0.05)
+            
+#             # Compute Zipf exponent from the utility distribution
+#             zipf_exponent = compute_zipf_exponent(utility)
+            
+#             # Collect data for the heatmap
+#             zipf_exponent_data.append({"method": folder, "zipf_exponent": zipf_exponent, "cvar": cvar, "mean_utility": np.mean(utility)})
+
+#     # Convert data to DataFrame
+#     zipf_exponent_df = pd.DataFrame(zipf_exponent_data)
+
+#     # Plotting the CVaR vs Zipf Exponent
+#     plt.figure(figsize=(10, 7))
+
+#     # Create heatmap for CVaR
+#     pivot_cvar = zipf_exponent_df.pivot(index="method", columns="zipf_exponent", values="cvar")
+#     sns.heatmap(pivot_cvar, cmap="YlGnBu", annot=True, fmt=".2f", linewidths=0.5)
+#     plt.title(f"CVaR vs Zipf Exponent for gamma_r values")
+#     plt.xlabel("Zipf Exponent")
+#     plt.ylabel("Method")
+#     plt.tight_layout()
+    
+#     # Save the CVaR heatmap
+#     if not os.path.exists("figures"):
+#         os.makedirs("figures")
+    
+#     plt.savefig("figures/6_Performance_vs_Zipf_CVaR.png")
+#     plt.close()  # Close the plot after saving
+
+#     # Plotting the Mean Utility vs Zipf Exponent
+#     plt.figure(figsize=(10, 7))
+
+#     # Create heatmap for Mean Utility
+#     pivot_utility = zipf_exponent_df.pivot(index="method", columns="zipf_exponent", values="mean_utility")
+#     sns.heatmap(pivot_utility, cmap="coolwarm", annot=True, fmt=".2f", linewidths=0.5)
+#     plt.title(f"Mean Utility vs Zipf Exponent for gamma_r values")
+#     plt.xlabel("Zipf Exponent")
+#     plt.ylabel("Method")
+#     plt.tight_layout()
+    
+#     # Save the Mean Utility heatmap
+#     plt.savefig("figures/6_Performance_vs_Zipf_Utility.png")
+#     plt.close() 
+
+#     print("CVaR and Mean Utility vs Zipf Exponent heatmaps have been saved in the 'figures' folder.")
+
+
+# def plot_cvar_vs_l(results_folder):
+#     """
+#     Draw CVaR vs L (Sample Size) plot for exp4 (L = {64, 128, 256}).
+#     :param results_folder: Path to the folder where results of the experiments are saved.
+#     """
+#     # Define the experiment folders for exp4 (L = {64, 128, 256})
+#     experiment_folders = ["exp4_L=64", "exp4_L=128", "exp4_L=256"]
+
+#     # Store results for plotting
+#     cvar_data = []
+
+#     for folder in experiment_folders:
+#         folder_path = os.path.join(results_folder, folder, "checkpoints")
+#         file_paths = [os.path.join(folder_path, f) for f in os.listdir(folder_path) if f.startswith('TRAIN')]
+
+#         for file_path in file_paths:
+#             # Read the CSV file
+#             df = pd.read_csv(file_path)
+
+#             # Extract CVaR_0.05_* data (assuming column names like "CVaR_0.05_RL2O-CVaR")
+#             cvar_05 = df['CVaR_0.05_RL2O-CVaR'].values[-1]  # takes final epoch's CVaR (after training)
+#             # Collect data for plotting
+#             sample_size = int(folder.split('=')[1])  # Extract L value from folder name
+#             cvar_data.append({"L": sample_size, "cvar": cvar_05})
+
+#     # Convert data to DataFrame
+#     cvar_df = pd.DataFrame(cvar_data)
+
+#     # Plotting CVaR vs L (Sample Size)
+#     plt.figure(figsize=(8, 6))
+#     plt.plot(cvar_df['L'], cvar_df['cvar'], marker='o', linestyle='-', color='b')
+#     plt.title("CVaR vs Sample Size (L)")
+#     plt.xlabel("Sample Size (L)")
+#     plt.ylabel("CVaR (gamma=0.05)")
+#     plt.grid(True)
+#     plt.tight_layout()
+
+#     # Save the plot
+#     if not os.path.exists("figures"):
+#         os.makedirs("figures")
+    
+#     plt.savefig("figures/8_CVaR_vs_L.png")
+#     plt.close()  # Close the plot after saving
+
+#     print("CVaR vs L plot has been saved in the 'figures' folder.")
+
+
+
+# def plot_training_curves(results_folder='results', smoothing_window=10):
+#     """
+#     Plots training and validation CVaR curves for each experiment.
+#     - Smoothed empirical CVaR objective vs. training epoch.
+#     - Validation CVaR vs. epoch for different methods.
+#     :param results_folder: Path to the folder where experiment results are saved.
+#     :param smoothing_window: The window size for the rolling average of the training loss.
+#     """
+#     method_linestyles = {
+#         "RL2O-CVaR": "--",
+#         # "Plug-in Mean-Opt": ":",
+#         "Popularity Heuristic (Top-S)": "-."
+#     }
+#     color_palette = ['red', 'green', 'blue', 'orange']
+
+#     experiments = [
+#         {"label": "W (Measurement Budget)", "folders": ["exp3_W=20","exp3_W=100",], "gamma": None},
+#     ]
+#     for experiment in experiments:
+#         # give a bit more width; we’ll place legend outside on the right
+#         fig, ax1 = plt.subplots(figsize=(14, 7))
+
+#         param_colors = {
+#             folder.split('=')[-1]: color_palette[i % len(color_palette)]
+#             for i, folder in enumerate(experiment["folders"])
+#         }
+#         experiment_label = experiment["label"]
+
+#         for folder in experiment["folders"]:
+#             folder_path = os.path.join(results_folder, folder, "checkpoints")
+#             file_paths = glob.glob(os.path.join(folder_path, 'TRAIN*.csv'))
+#             if not file_paths:
+#                 print(f"No training CSV found in {folder_path}")
+#                 continue
+
+#             df = pd.read_csv(file_paths[0])
+#             param_value = folder.split('=')[-1]
+#             color = param_colors[param_value]
+
+#             # Smoothed training loss
+#             smoothed_loss = df['loss_train_mean'].rolling(window=smoothing_window, min_periods=1).mean()
+#             ax1.plot(df['epoch'], smoothed_loss, '-', color=color,
+#                      label=f'Train Loss ({experiment_label}={param_value})', alpha=0.8)
+
+#             # Validation CVaR for each method
+#             for method, linestyle in method_linestyles.items():
+#                 cvar_col = f'CVaR_0.05_{method}'
+#                 if cvar_col in df.columns:
+#                     ax1.plot(df['epoch'], df[cvar_col], linestyle=linestyle, color=color,
+#                              label=f'Val CVaR ({method}, {param_value})')
+
+#         ax1.set_xlabel('Epoch')
+#         ax1.set_ylabel('CVaR / Smoothed Loss')
+#         fig.suptitle(f'Training and Validation CVaR Curves: {experiment_label}', fontsize=16)
+
+#         # ---- key change: put legend outside the axes on the right ----
+#         handles, labels = ax1.get_legend_handles_labels()
+#         ax1.legend(handles, labels, loc='center left', bbox_to_anchor=(1.02, 0.5),
+#                    borderaxespad=0., frameon=True, fontsize=9)
+
+#         # keep tight layout but leave room for the external legend + suptitle
+#         fig.tight_layout(rect=[0, 0.03, 0.82, 0.95])
+
+#         plot_filename = f"figures/10_Training_Curves_{experiment_label}.png"
+#         # ensure the external legend isn’t clipped
+#         plt.savefig(plot_filename, dpi=200, bbox_inches='tight')
+#         plt.close(fig)
+
+#     print("All training curve plots have been saved in the 'figures' folder.")
+
+
+# def generate_plots():
+#     Utility_CDFs('results')
+#     Mean_vs_CVaR_tradeoff_scatter('results')
+#     plot_cvar_vs_w('results')
+#     plot_loss_distribution_sorted('results')
+#     plot_performance_vs_zipf('results')
+#     plot_cvar_vs_l('results')
+#     plot_training_curves()
+
+
+# # generate_plots()
 

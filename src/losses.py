@@ -56,7 +56,7 @@ def project_capped_simplex(y: torch.Tensor, S: float, tol: float = 1e-6, max_ite
         return torch.ones_like(y)
 
     # clamp to [0,1]; rows already within the cap are done
-    y_clamped = torch.clamp(y_, 0.0, 1.0)
+    y_clamped = torch.clamp(y_, 0.0, 1.0).to(device)
     row_sums = y_clamped.sum(dim=1)
     mask_done = (row_sums <= S)
     x = y_clamped.clone()
@@ -264,6 +264,26 @@ def single_utility_from_env(
     # print(f"  *** FINAL U = {U.item():.6f} ***\n")
     
     return torch.clamp(U, 0.0, 1.0)
+
+def single_utility_from_env_debug(
+    p: torch.Tensor,
+    lam: torch.Tensor,
+    x: torch.Tensor,
+    **kwargs
+) -> torch.Tensor:
+    """Debug wrapper for single_utility_from_env"""
+    print(f"\n  [single_utility_from_env called]")
+    print(f"    p: shape={p.shape}, sum={p.sum().item():.6f}, requires_grad={p.requires_grad}")
+    print(f"    lam: value={lam.item() if lam.numel()==1 else 'multi':.6f}, requires_grad={lam.requires_grad}")
+    print(f"    x: shape={x.shape}, sum={x.sum().item():.6f}, requires_grad={x.requires_grad}")
+    print(f"    x: min={x.min().item():.6f}, max={x.max().item():.6f}")
+    
+    result = single_utility_from_env(p, lam, x, **kwargs)
+    
+    print(f"    result: {result.item():.6f}, requires_grad={result.requires_grad}")
+    print(f"    result.grad_fn: {result.grad_fn}")
+    
+    return result
 
 def utility_from_env_samples(
     p_samples: torch.Tensor,
