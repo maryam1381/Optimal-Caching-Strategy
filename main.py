@@ -54,10 +54,10 @@ DEFAULT_CONFIG = {
     "val_set_fraction": 0.1,    # <-- ADDED: Fraction for validation set
     "batch_size": 64, 
     "L": 256,  # sample size 
-    "gamma": 0.05, 
-    "tau": 15.0, 
+    "gamma": 0.1, 
+    "tau": 10.0, 
     "lr": 5e-3,         
-    "epochs": 100,  
+    "epochs": 5,  
     "S_cache": 20, 
     "hidden_small": False,  # Use larger hidden layers
     "dropout": 0.1,  # Added dropout to prevent overfitting
@@ -98,7 +98,7 @@ def build_synthetic_dataset_from_pool(pool: tuple, dataset_size: int, M: int, W:
 
 def main(config: Dict[str, Any]):
     rng = utils_mod.set_seed(int(config["seed"]))
-    device = utils_mod.get_device(prefer_cuda=True)
+    device = utils_mod.get_device(prefer_cuda=False)
     save_dir = Path(config["save_dir"])
     utils_mod.ensure_dir(str(save_dir))
 
@@ -352,6 +352,9 @@ if __name__ == "__main__":
         print(f"\n All steps finished successfully.")
         print(f"Final results are saved in: {Path(cfg['save_dir']).resolve()}")
         print(f"Final plots are saved in: {REPO_ROOT / 'figures'}")
+
+
+        # main(cfg)
 
     except Exception as e:
         print(f"\n ERROR: An error occurred during the workflow: {e}")

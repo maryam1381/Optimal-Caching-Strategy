@@ -21,32 +21,31 @@ import torch.nn.functional as F
 # ----------------------------
 # Projection onto capped simplex
 # ----------------------------
-def project_capped_simplex(y: torch.Tensor, S: float, tol: float = 1e-6, max_iter: int = 60) -> torch.Tensor:
+def project_capped_simplex(
+    y: torch.Tensor, 
+    S: float, 
+    temperature: float = 5.0,  # <--- 1. Set Default Temperature (Safety Valve)
+    tol: float = 1e-6, 
+    max_iter: int = 60
+) -> torch.Tensor:
     """
     Euclidean projection of y onto { x in [0,1]^M : sum_i x_i <= S }.
-
-    Implements a scalar bisection on theta for x_i = clip(y_i - theta, 0,1).
-    This returns a tensor of same shape as y.
-
-    Parameters
-    ----------
-    y : torch.Tensor (M,) or (batch, M)
-        Input (unconstrained) vector(s).
-    S : float
-        Sum upper-bound (0 <= S <= M).
-    tol : float
-        Stopping tolerance for theta.
-    max_iter : int
-        Maximum bisection iterations.
-
-    Returns
-    -------
-    x : torch.Tensor
-        Projected vector(s), same dtype/device as y.
+    
+    Includes built-in temperature scaling.
+    - Higher temp (>1) prevents "binary collapse" when inputs are large.
+    - Default of 20.0 ensures inputs effectively behave like "Normal Scale".
     """
     single = (y.dim() == 1)
     y_ = y.unsqueeze(0) if single else y  # (B, M)
     device, dtype = y_.device, y_.dtype
+    
+    # --- 2. Apply Scaling Permanently ---
+    # This forces the data into a "normal" range before projection logic begins.
+    # Even if 'y' has std=100, dividing by 20 reduces it to std=5.
+    if temperature > 0:
+        y_ = y_ / temperature
+    # ------------------------------------
+
     B, M = y_.shape
 
     # trivial cases
@@ -91,7 +90,6 @@ def project_capped_simplex(y: torch.Tensor, S: float, tol: float = 1e-6, max_ite
 
     return x.squeeze(0) if single else x
 
-
 # ----------------------------
 # Closed-form P_succ for alpha = 4 and Rayleigh interferers
 # ----------------------------
@@ -131,68 +129,6 @@ def _Q_torch_safe(z: torch.Tensor, eps: float = 1e-12) -> torch.Tensor:
     return torch.clamp(q, min=eps)
 
 
-# def p_succ_alpha4(
-#     lam_i: torch.Tensor,
-#     lam_I: torch.Tensor,
-#     theta: float,
-# ) -> torch.Tensor:
-#     """
-#     Compute per-file success probability under alpha=4 closed-form kernel.
-#     Uses log-domain computation for numerical stability.
-#     """
-#     # Compute rho using the provided equation
-#     rho = rho_theta_alpha4(theta)  # compute rho(theta, 4) using the updated formula
-
-#     # Compute the success probability as per the given formula
-#     p_succ = lam_i / (lam_i + lam_I * rho)
-
-#     return torch.clamp(p_succ, min=0.0, max=1.0)
-
-
-# lam_i = torch.tensor(5.0)  # scalar value for lambda_i
-# lam_I = torch.tensor(3.0)  # scalar value for lambda_I
-# theta = 4.0  # scalar value for theta
-# print(p_succ_alpha4(lam_i, lam_I, theta))
-
-
-def p_succ_alpha4(
-    lam_i: torch.Tensor,
-    lam_I: torch.Tensor,
-    theta: float,
-    P_t: float = 1.0,
-    N0: float = 1e-9,
-    mu: float = 1.0,
-    eps: float = 1e-12
-) -> torch.Tensor:
-    """
-    Compute per-file success probability under alpha=4 closed-form kernel.
-    Uses log-domain computation for numerical stability.
-    """
-    device = lam_i.device
-    dtype = lam_i.dtype
-
-    # Compute scalar b
-    b = mu * theta * (N0 / P_t)
-    b_t = torch.tensor(max(b, eps), dtype=dtype, device=device)
-
-    # Compute a = π * (lam_i + lam_I * rho)
-    theta_t = torch.tensor(theta, dtype=dtype, device=device)
-    rho = rho_theta_alpha4(theta_t)  # scalar
-    a = math.pi * (lam_i + lam_I * rho)
-
-    # Compute z = a / sqrt(2b)
-    denom = torch.sqrt(2.0 * b_t)
-    z = torch.clamp(a / denom, max=12.0)  # clamp to avoid log(0)
-
-    # Compute log(P_succ)
-    pref = (math.pi ** 1.5) * lam_i / torch.sqrt(b_t)
-    exponent = torch.clamp((a ** 2) / (4.0 * b_t), max=50.0)
-    log_P_succ = torch.log(pref + eps) + exponent + torch.log(_Q_torch_safe(z, eps))
-    log_P_succ = torch.clamp(log_P_succ, max=0.0) 
-    # Final success probability
-    P_succ = torch.exp(log_P_succ)
-    return torch.clamp(P_succ, min=0.0, max=1.0)
-
 def p_succ_alpha4_simple(
     lam_i: torch.Tensor,      # (M,) or (B,L,M) or (B,M)
     lam_I: torch.Tensor,      # scalar or compatible shape
@@ -217,9 +153,59 @@ def p_succ_alpha4_simple(
 # ----------------------------
 # Utility evaluation from a single x and many env samples
 # ----------------------------
+# def single_utility_from_env(
+#     p: torch.Tensor,           # (M,)
+#     lam: torch.Tensor,         # scalar
+#     x: torch.Tensor,           # (M,)
+#     theta: float = 1.0,
+#     lambda_I_factor: float = 1.0,
+#     P_t: float = 1.0,
+#     N0: float = 1e-9,
+#     mu: float = 1.0
+# ) -> torch.Tensor:
+#     """
+#     Computes utility for a single policy vector x in a single environment (p, lam).
+#     """
+#     device = x.device
+#     dtype = x.dtype
+    
+#     # Ensure inputs are tensors on the correct device
+#     if not torch.is_tensor(p):
+#         p = torch.tensor(p, dtype=dtype, device=device)
+#     if not torch.is_tensor(lam):
+#         lam = torch.tensor(lam, dtype=dtype, device=device)
+
+#     # # DEBUG: Check input shapes
+#     # print(f"[single_utility_from_env DEBUG]")
+#     # print(f"  p.shape={p.shape}, p.min={p.min():.6f}, p.max={p.max():.6f}, p.sum={p.sum():.6f}")
+#     # print(f"  lam={lam.item():.6f}")
+#     # print(f"  x.shape={x.shape}, x.min={x.min():.6f}, x.max={x.max():.6f}, x.sum={x.sum():.6f}")
+    
+#     # Calculate per-file success probabilities
+#     lam_i = lam * x
+#     lam_I = lam * lambda_I_factor
+    
+#     # print(f"  lam_i.min={lam_i.min():.6f}, lam_i.max={lam_i.max():.6f}")
+#     # print(f"  lam_I={lam_I.item():.6f}")
+    
+#     # lam_I is a scalar, needs to be expanded for p_succ_alpha4
+#     P_succ = p_succ_alpha4_simple(lam_i, lam_I.expand_as(lam_i), theta, P_t, N0, mu)
+    
+#     # print(f"  P_succ.min={P_succ.min():.6f}, P_succ.max={P_succ.max():.6f}")
+#     # print(f"  P_succ.mean={P_succ.mean():.6f}")
+    
+#     # Compute final utility
+#     U = torch.sum(p * P_succ)
+    
+#     # print(f"  *** FINAL U = {U.item():.6f} ***\n")
+    
+#     return torch.clamp(U, 0.0, 1.0)
+
+import torch
+
 def single_utility_from_env(
     p: torch.Tensor,           # (M,)
-    lam: torch.Tensor,         # scalar
+    lam: torch.Tensor,         # scalar or (1,)
     x: torch.Tensor,           # (M,)
     theta: float = 1.0,
     lambda_I_factor: float = 1.0,
@@ -229,61 +215,41 @@ def single_utility_from_env(
 ) -> torch.Tensor:
     """
     Computes utility for a single policy vector x in a single environment (p, lam).
+    Ensures device/dtype consistency based on x.
     """
-    device = x.device
-    dtype = x.dtype
+    # 1. Get target device and dtype from the policy vector x
+    target_device = x.device
+    target_dtype = x.dtype
     
-    # Ensure inputs are tensors on the correct device
-    if not torch.is_tensor(p):
-        p = torch.tensor(p, dtype=dtype, device=device)
-    if not torch.is_tensor(lam):
-        lam = torch.tensor(lam, dtype=dtype, device=device)
+    # 2. Sync p with x (handle both Tensor and numpy/list inputs)
+    if isinstance(p, torch.Tensor):
+        p = p.to(device=target_device, dtype=target_dtype)
+    else:
+        p = torch.tensor(p, device=target_device, dtype=target_dtype)
 
-    # # DEBUG: Check input shapes
-    # print(f"[single_utility_from_env DEBUG]")
-    # print(f"  p.shape={p.shape}, p.min={p.min():.6f}, p.max={p.max():.6f}, p.sum={p.sum():.6f}")
-    # print(f"  lam={lam.item():.6f}")
-    # print(f"  x.shape={x.shape}, x.min={x.min():.6f}, x.max={x.max():.6f}, x.sum={x.sum():.6f}")
+    # 3. Sync lam with x
+    if isinstance(lam, torch.Tensor):
+        lam = lam.to(device=target_device, dtype=target_dtype)
+    else:
+        lam = torch.tensor(lam, device=target_device, dtype=target_dtype)
+
+    # --- Main Calculation ---
     
-    # Calculate per-file success probabilities
+    # Calculate effective traffic intensity per file
     lam_i = lam * x
+    
+    # Interferer intensity (scalar)
     lam_I = lam * lambda_I_factor
     
-    # print(f"  lam_i.min={lam_i.min():.6f}, lam_i.max={lam_i.max():.6f}")
-    # print(f"  lam_I={lam_I.item():.6f}")
-    
-    # lam_I is a scalar, needs to be expanded for p_succ_alpha4
+    # Calculate success probabilities
+    # Note: lam_I is scalar, so we expand it to match the shape of lam_i
     P_succ = p_succ_alpha4_simple(lam_i, lam_I.expand_as(lam_i), theta, P_t, N0, mu)
     
-    # print(f"  P_succ.min={P_succ.min():.6f}, P_succ.max={P_succ.max():.6f}")
-    # print(f"  P_succ.mean={P_succ.mean():.6f}")
-    
-    # Compute final utility
+    # Compute final utility: weighted sum of success probabilities
     U = torch.sum(p * P_succ)
     
-    # print(f"  *** FINAL U = {U.item():.6f} ***\n")
-    
+    # Clamp result between 0 and 1
     return torch.clamp(U, 0.0, 1.0)
-
-def single_utility_from_env_debug(
-    p: torch.Tensor,
-    lam: torch.Tensor,
-    x: torch.Tensor,
-    **kwargs
-) -> torch.Tensor:
-    """Debug wrapper for single_utility_from_env"""
-    print(f"\n  [single_utility_from_env called]")
-    print(f"    p: shape={p.shape}, sum={p.sum().item():.6f}, requires_grad={p.requires_grad}")
-    print(f"    lam: value={lam.item() if lam.numel()==1 else 'multi':.6f}, requires_grad={lam.requires_grad}")
-    print(f"    x: shape={x.shape}, sum={x.sum().item():.6f}, requires_grad={x.requires_grad}")
-    print(f"    x: min={x.min().item():.6f}, max={x.max().item():.6f}")
-    
-    result = single_utility_from_env(p, lam, x, **kwargs)
-    
-    print(f"    result: {result.item():.6f}, requires_grad={result.requires_grad}")
-    print(f"    result.grad_fn: {result.grad_fn}")
-    
-    return result
 
 def utility_from_env_samples(
     p_samples: torch.Tensor,
@@ -336,7 +302,7 @@ def utility_from_env_samples(
     lam_I = lam_I.view(-1, 1)  # broadcastable to (L,M)
 
     # compute per-file success probabilities (L,M)
-    P_succ = p_succ_alpha4(lam_i, lam_I, theta)
+    P_succ = p_succ_alpha4_simple(lam_i, lam_I, theta)
 
     # per-scenario utility U = sum_i p_i * P_succ_i
     U = torch.sum(p_samples * P_succ, dim=1)  # (L,)
@@ -400,7 +366,7 @@ def batch_utility_from_env_samples(
     lam_I_flat = lam_I.reshape(BL, 1)     # (BL,1)
 
     # Compute per-file success probabilities
-    P_succ_flat = p_succ_alpha4(lam_i_flat, lam_I_flat, theta)
+    P_succ_flat = p_succ_alpha4_simple(lam_i_flat, lam_I_flat, theta)
     if P_succ_flat.dim() != 2 or P_succ_flat.shape != (BL, M):
         # Be strict to surface bugs early
         raise ValueError(
@@ -513,7 +479,8 @@ def smoothed_cvar_loss_from_utilities(
     B, L = U.shape
 
     # loss ell = 1 - U (we minimize loss)
-    ell = 1.0 - U  # (B, L)
+    # ell = 1.0 - U  # (B, L)
+    ell = 1.0 - U + 1e-5 * torch.randn_like(U)
 
     # solve t* per row
     t_star = solve_t_star_bisection(ell, gamma=gamma, tau=tau, tol=tol, max_iter=max_iter)  # shape (B,)
@@ -532,3 +499,66 @@ def smoothed_cvar_loss_from_utilities(
 
 if __name__ == "__main__":
     pass
+
+
+# def p_succ_alpha4(
+#     lam_i: torch.Tensor,
+#     lam_I: torch.Tensor,
+#     theta: float,
+# ) -> torch.Tensor:
+#     """
+#     Compute per-file success probability under alpha=4 closed-form kernel.
+#     Uses log-domain computation for numerical stability.
+#     """
+#     # Compute rho using the provided equation
+#     rho = rho_theta_alpha4(theta)  # compute rho(theta, 4) using the updated formula
+
+#     # Compute the success probability as per the given formula
+#     p_succ = lam_i / (lam_i + lam_I * rho)
+
+#     return torch.clamp(p_succ, min=0.0, max=1.0)
+
+
+# lam_i = torch.tensor(5.0)  # scalar value for lambda_i
+# lam_I = torch.tensor(3.0)  # scalar value for lambda_I
+# theta = 4.0  # scalar value for theta
+# print(p_succ_alpha4(lam_i, lam_I, theta))
+
+
+# def p_succ_alpha4(
+#     lam_i: torch.Tensor,
+#     lam_I: torch.Tensor,
+#     theta: float,
+#     P_t: float = 1.0,
+#     N0: float = 1e-9,
+#     mu: float = 1.0,
+#     eps: float = 1e-12
+# ) -> torch.Tensor:
+#     """
+#     Compute per-file success probability under alpha=4 closed-form kernel.
+#     Uses log-domain computation for numerical stability.
+#     """
+#     device = lam_i.device
+#     dtype = lam_i.dtype
+
+#     # Compute scalar b
+#     b = mu * theta * (N0 / P_t)
+#     b_t = torch.tensor(max(b, eps), dtype=dtype, device=device)
+
+#     # Compute a = π * (lam_i + lam_I * rho)
+#     theta_t = torch.tensor(theta, dtype=dtype, device=device)
+#     rho = rho_theta_alpha4(theta_t)  # scalar
+#     a = math.pi * (lam_i + lam_I * rho)
+
+#     # Compute z = a / sqrt(2b)
+#     denom = torch.sqrt(2.0 * b_t)
+#     z = torch.clamp(a / denom, max=12.0)  # clamp to avoid log(0)
+
+#     # Compute log(P_succ)
+#     pref = (math.pi ** 1.5) * lam_i / torch.sqrt(b_t)
+#     exponent = torch.clamp((a ** 2) / (4.0 * b_t), max=50.0)
+#     log_P_succ = torch.log(pref + eps) + exponent + torch.log(_Q_torch_safe(z, eps))
+#     log_P_succ = torch.clamp(log_P_succ, max=0.0) 
+#     # Final success probability
+#     P_succ = torch.exp(log_P_succ)
+#     return torch.clamp(P_succ, min=0.0, max=1.0)

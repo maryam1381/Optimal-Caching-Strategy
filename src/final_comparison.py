@@ -183,10 +183,10 @@ def evaluate_rl2o_cvar_model(
     # Re-format metrics for consistent reporting
     # Note: evaluate_model's 'VaR_{gamma}' is CVaR-loss at '1-gamma'
     metrics_model_agg = {
-        'mean_utility': metrics_model['mean_utility_mean'],
+        'mean_utility': metrics_model['mean_utility'],
         'mean_loss': metrics_model['mean_loss_mean'],
-        f'VaR_loss_{alpha:.2f}': metrics_model[f'VaR_{gamma}'],
-        f'CVaR_loss_{alpha:.2f}': metrics_model[f'CVaR_{gamma}']
+        f'VaR_loss_{alpha:.2f}': metrics_model[f'VaR_loss_{gamma:.2f}'],
+        f'CVaR_loss_{alpha:.2f}': metrics_model[f'CVaR_loss_{gamma:.2f}']
     }
     return metrics_model_agg
 
